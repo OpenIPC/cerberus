@@ -1,0 +1,4 @@
+# build output
+/cerberus
+/dist/
+*.o

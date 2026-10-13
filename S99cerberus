@@ -1,0 +1,54 @@
+#!/bin/sh
+# OpenIPC uses BusyBox init, not systemd. Config lives in the U-Boot environment, which is also
+# where cerberus persists the join material it gets back from the coordinator.
+
+DAEMON=/usr/sbin/cerberus
+PIDFILE=/var/run/cerberus.pid
+
+# Read the deployment config out of the U-Boot env (streq_api, streq_enrollment_token, ...) so a
+# camera is provisioned with `fw_setenv` and a reboot, without touching the read-only rootfs.
+export STREQ_API="$(fw_printenv -n streq_api 2>/dev/null)"
+export STREQ_ENROLLMENT_TOKEN="$(fw_printenv -n streq_enrollment_token 2>/dev/null)"
+export STREQ_SUBNET="$(fw_printenv -n streq_subnet 2>/dev/null)"
+
+# Пустая переменная для агента означает "как по умолчанию" (env_or), поэтому отсутствующий ключ в
+# u-boot env безвреден и все, что ниже, необязательно.
+#
+# streq_ca — не роскошь: прошивка может не нести бандл доверенных CA вовсе, и тогда энролл падает на
+# проверке сертификата координатора, а поправить это, не перепрошивая камеру, больше нечем. Класть
+# туда путь к корневому сертификату (ISRG Root X1 для Let's Encrypt, или свой CA).
+export STREQ_CA="$(fw_printenv -n streq_ca 2>/dev/null)"
+# Имя, под которым камера появится в панели; иначе там будет один id.
+export STREQ_HOSTNAME="$(fw_printenv -n streq_hostname 2>/dev/null)"
+# Адрес для пробы внутри туннеля (по умолчанию выводится из streq_subnet) и её период.
+export STREQ_PING_TARGET="$(fw_printenv -n streq_ping_target 2>/dev/null)"
+export STREQ_PING_INTERVAL="$(fw_printenv -n streq_ping_interval 2>/dev/null)"
+STREQ_IFACE=$(fw_printenv -n streq_iface 2>/dev/null)
+export STREQ_IFACE=${STREQ_IFACE:-wg0}
+
+case "$1" in
+	start)
+		[ -n "$STREQ_API" ] || { echo "streq: not provisioned (fw_setenv streq_api ...)"; exit 0; }
+		echo "Starting cerberus..."
+		start-stop-daemon -S -q -m -b -p $PIDFILE -x $DAEMON -- run
+		;;
+	stop)
+		echo "Stopping cerberus..."
+		start-stop-daemon -K -q -p $PIDFILE
+		# Интерфейса может не быть — агент мог не дойти до его подъёма. Это не повод завершиться с
+		# ошибкой: для init "stop" неподнятого сервиса обязан быть успехом.
+		ip link del dev "$STREQ_IFACE" 2>/dev/null || true
+		;;
+	restart|reload)
+		"$0" stop
+		sleep 1
+		"$0" start
+		;;
+	status)
+		$DAEMON status
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart|status}"
+		exit 1
+		;;
+esac

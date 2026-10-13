@@ -1,0 +1,113 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    # The init script and the installers run under BusyBox ash on the camera, where nobody watches
+    # them fail. SC2155 is off: `export X="$(fw_printenv ...)"` masking the exit status is the point —
+    # a key that is not set is simply empty.
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck -S warning -e SC2155 S99cerberus bootstrap.sh uninstall.sh ci/build.sh tests/run.sh tests/suite.sh
+
+  test:
+    name: tests (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    # Both mbedTLS generations are in the field: 3.x on current distros and in Alpine (musl, which is
+    # what OpenIPC is), 2.28 LTS in Buildroot-era firmware — and Debian bookworm carries exactly that.
+    # The suite builds with -Werror, enrols against a fake coordinator over real TLS, and brings up a
+    # real WireGuard tunnel to a hub in its own netns; REQUIRE_WG turns a runner without kernel
+    # WireGuard into a failure instead of a silently skipped section. ubuntu-latest has it.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: musl, mbedTLS 3.x
+            image: alpine:3.20
+          - name: glibc, mbedTLS 2.28
+            image: debian:bookworm-slim
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test
+        run: tests/run.sh
+        env:
+          CERBERUS_TEST_IMAGE: ${{ matrix.image }}
+          REQUIRE_WG: '1'
+
+  build:
+    name: build (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    # The real target is arm; a compile-only x64 job would keep reporting green while the binary the
+    # firmware needs does not exist. musl-armv7 is the artefact that actually goes into OpenIPC
+    # firmware and builds in an emulated armv7 Alpine, so it is the one target here that needs binfmt.
+    # The ELF-architecture assertion lives in the script, next to the build that produced the binary.
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [musl-armv7, armhf, arm64, amd64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # git describe needs the tags: the version compiled into the binary comes from them.
+          fetch-depth: 0
+
+      - name: Enable arm emulation
+        if: matrix.arch == 'musl-armv7'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm
+
+      - name: Build and package
+        run: ci/build.sh ${{ matrix.arch }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cerberus-${{ matrix.arch }}
+          path: dist/*.tar.gz*
+          if-no-files-found: error
+
+  release:
+    name: release
+    # A v* tag publishes the tarballs that were just built and tested — the same artefacts, not a
+    # rebuild — as a GitHub release.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [lint, test, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cerberus-*
+          path: dist
+          merge-multiple: true
+
+      - name: Every tarball carries the tag's version
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          ls dist
+          for f in dist/*.tar.gz; do
+            case "$(basename "$f")" in
+              "cerberus-$want-linux-"*) ;;
+              *) echo "$f was not built as $want"; exit 1 ;;
+            esac
+          done
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" --title "cerberus ${GITHUB_REF_NAME#v}" --generate-notes --verify-tag
