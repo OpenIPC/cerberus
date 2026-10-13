@@ -56,9 +56,9 @@
 /* Both mbedTLS generations are in the field: 3.x on current distros, 2.28 LTS in Buildroot (and so
  * in most OpenIPC-era firmware). The only call that differs is the one-shot SHA-256. */
 #if MBEDTLS_VERSION_MAJOR < 3
-#define streq_sha256(in, len, out) mbedtls_sha256_ret((in), (len), (out), 0)
+#define sha256_once(in, len, out) mbedtls_sha256_ret((in), (len), (out), 0)
 #else
-#define streq_sha256(in, len, out) mbedtls_sha256((in), (len), (out), 0)
+#define sha256_once(in, len, out) mbedtls_sha256((in), (len), (out), 0)
 #endif
 
 /* Release builds pass the tag in (`make VERSION=...`); a plain `make` reports the source version. */
@@ -118,7 +118,7 @@ static void die(const char *fmt, ...)
 
 /* ----------------------------------------------------------------- config */
 
-/* Bound from STREQ_* env, same convention as the .NET agent (AgentOptions). */
+/* Bound from CERBERUS_* env, same convention as the .NET agent (AgentOptions). */
 struct cfg {
     const char *api;            /* coordinator base URL incl. /v1 */
     const char *token;          /* one-shot enrollment token */
@@ -144,48 +144,57 @@ struct cfg {
 
 static struct cfg g_cfg;
 
-static const char *env_or(const char *name, const char *fallback)
+/* CERBERUS_<name>, then the name this agent had before it was renamed — CERBERUS_<name> — so a script or an
+ * init file written for the old name keeps working. */
+static const char *cfg_env(const char *name, const char *fallback)
 {
-    const char *v = getenv(name);
+    char key[64];
+    const char *v;
+
+    snprintf(key, sizeof key, "CERBERUS_%s", name);
+    v = getenv(key);
+    if (v && *v) return v;
+    snprintf(key, sizeof key, "STREQ_%s", name);
+    v = getenv(key);
     return (v && *v) ? v : fallback;
 }
 
 static void cfg_load(void)
 {
-    g_cfg.api = env_or("STREQ_API", "https://api.localhost/v1");
-    g_cfg.token = env_or("STREQ_ENROLLMENT_TOKEN", "");
-    g_cfg.kind = env_or("STREQ_KIND", "Camera");
-    g_cfg.hostname = env_or("STREQ_HOSTNAME", NULL);
-    g_cfg.iface = env_or("STREQ_IFACE", "wg0");
-    g_cfg.subnet = env_or("STREQ_SUBNET", "10.80.0.0/16");
-    g_cfg.ca = env_or("STREQ_CA", "/etc/ssl/certs/ca-certificates.crt");
-    g_cfg.store = env_or("STREQ_STORE", "auto");
-    g_cfg.keyfile = env_or("STREQ_KEYFILE", "/etc/streq/wg.key");
-    g_cfg.insecure = atoi(env_or("STREQ_INSECURE", "0"));
-    g_quiet = atoi(env_or("STREQ_QUIET", "0"));
-    g_cfg.dry_run = atoi(env_or("STREQ_DRY_RUN", "0"));
-    g_cfg.watch_interval = atoi(env_or("STREQ_WATCH_INTERVAL", "30"));
-    g_cfg.stale_after = atoi(env_or("STREQ_STALE_AFTER", "180"));
+    g_cfg.api = cfg_env("API", "https://api.localhost/v1");
+    g_cfg.token = cfg_env("ENROLLMENT_TOKEN", "");
+    g_cfg.kind = cfg_env("KIND", "Camera");
+    g_cfg.hostname = cfg_env("HOSTNAME", NULL);
+    g_cfg.iface = cfg_env("IFACE", "wg0");
+    g_cfg.subnet = cfg_env("SUBNET", "10.80.0.0/16");
+    g_cfg.ca = cfg_env("CA", "/etc/ssl/certs/ca-certificates.crt");
+    g_cfg.store = cfg_env("STORE", "auto");
+    g_cfg.keyfile = cfg_env("KEYFILE", "/etc/streq/wg.key");
+    g_cfg.insecure = atoi(cfg_env("INSECURE", "0"));
+    g_quiet = atoi(cfg_env("QUIET", "0"));
+    g_cfg.dry_run = atoi(cfg_env("DRY_RUN", "0"));
+    g_cfg.watch_interval = atoi(cfg_env("WATCH_INTERVAL", "30"));
+    g_cfg.stale_after = atoi(cfg_env("STALE_AFTER", "180"));
 
     /* The coordinator's contract: 20s by default, never faster than 5. */
-    g_cfg.heartbeat = atoi(env_or("STREQ_HEARTBEAT", "20"));
+    g_cfg.heartbeat = atoi(cfg_env("HEARTBEAT", "20"));
     if (g_cfg.heartbeat > 0 && g_cfg.heartbeat < 5) g_cfg.heartbeat = 5;
     if (g_cfg.watch_interval < 1) g_cfg.watch_interval = 1;
 
     /* The in-tunnel probe. Slower than the handshake check on purpose: it costs a packet round trip
      * over the overlay, and what it is looking for (a path that is up on paper and dead in fact) does
      * not appear between two ticks. */
-    g_cfg.ping_target = env_or("STREQ_PING_TARGET", "");
-    g_cfg.ping_interval = atoi(env_or("STREQ_PING_INTERVAL", "60"));
-    g_cfg.ping_timeout = atoi(env_or("STREQ_PING_TIMEOUT", "3"));
-    g_cfg.ping_fails = atoi(env_or("STREQ_PING_FAILS", "3"));
+    g_cfg.ping_target = cfg_env("PING_TARGET", "");
+    g_cfg.ping_interval = atoi(cfg_env("PING_INTERVAL", "60"));
+    g_cfg.ping_timeout = atoi(cfg_env("PING_TIMEOUT", "3"));
+    g_cfg.ping_fails = atoi(cfg_env("PING_FAILS", "3"));
     if (g_cfg.ping_interval > 0 && g_cfg.ping_interval < 10) g_cfg.ping_interval = 10;
     if (g_cfg.ping_timeout < 1) g_cfg.ping_timeout = 1;
     if (g_cfg.ping_fails < 1) g_cfg.ping_fails = 1;
 
     /* Ждать координатор, а не умирать. См. enroll_with_retry. */
-    g_cfg.retry_min = atoi(env_or("STREQ_RETRY_MIN", "5"));
-    g_cfg.retry_max = atoi(env_or("STREQ_RETRY_MAX", "300"));
+    g_cfg.retry_min = atoi(cfg_env("RETRY_MIN", "5"));
+    g_cfg.retry_max = atoi(cfg_env("RETRY_MAX", "300"));
     if (g_cfg.retry_min < 1) g_cfg.retry_min = 1;
     if (g_cfg.retry_max < g_cfg.retry_min) g_cfg.retry_max = g_cfg.retry_min;
 }
@@ -225,7 +234,7 @@ static void sha256_hex(const char *in, char out[65])
 {
     unsigned char d[32];
     int i;
-    if (streq_sha256((const unsigned char *)in, strlen(in), d) != 0)
+    if (sha256_once((const unsigned char *)in, strlen(in), d) != 0)
         die("sha256 failed");
     for (i = 0; i < 32; i++)
         sprintf(out + i * 2, "%02x", d[i]);
@@ -380,10 +389,26 @@ static int store_is_uboot(void)
     return have("fw_setenv");   /* auto */
 }
 
+#define STORE_FILE_DEFAULT "/etc/cerberus/agent.env"
+#define STORE_FILE_LEGACY  "/etc/streq/agent.env"
+
+static void mkparent(const char *path);
+
+/* The default file moved with the rename; one still in the old place is moved over, once. */
 static const char *store_file(void)
 {
+    static const char *path;
+
     if (!strncmp(g_cfg.store, "file:", 5)) return g_cfg.store + 5;
-    return "/etc/streq/agent.env";
+    if (path) return path;
+
+    path = STORE_FILE_DEFAULT;
+    if (access(STORE_FILE_DEFAULT, F_OK) != 0 && access(STORE_FILE_LEGACY, F_OK) == 0) {
+        mkparent(STORE_FILE_DEFAULT);
+        if (rename(STORE_FILE_LEGACY, STORE_FILE_DEFAULT) != 0)
+            path = STORE_FILE_LEGACY;
+    }
+    return path;
 }
 
 static void mkparent(const char *path)
@@ -430,7 +455,8 @@ static int store_get(const char *key, char *out, size_t out_sz)
     return 0;
 }
 
-static void store_set(const char *key, const char *value)
+/* Sets `key`, or removes it when `value` is NULL. */
+static void store_put(const char *key, const char *value)
 {
     const char *path;
     char tmp[512], line[1024];
@@ -438,8 +464,8 @@ static void store_set(const char *key, const char *value)
     FILE *in, *out;
 
     if (store_is_uboot()) {
-        char *argv[] = { "fw_setenv", (char *)key, (char *)value, NULL };
-        if (run(argv, NULL, 0) != 0)
+        char *argv[] = { "fw_setenv", (char *)key, (char *)value, NULL };   /* no value = unset */
+        if (run(argv, NULL, 0) != 0 && value)
             die("fw_setenv %s failed — is /etc/fw_env.config right?", key);
         return;
     }
@@ -447,11 +473,12 @@ static void store_set(const char *key, const char *value)
     /* Rewrite the file with this key replaced. Small and rare enough that a full rewrite beats
      * carrying an in-memory model of it. */
     path = store_file();
+    in = fopen(path, "r");
+    if (!in && !value) return;
     mkparent(path);
     snprintf(tmp, sizeof tmp, "%s.tmp", path);
     out = fopen(tmp, "w");
     if (!out) die("cannot write %s: %s", tmp, strerror(errno));
-    in = fopen(path, "r");
     if (in) {
         while (fgets(line, sizeof line, in)) {
             if (!strncmp(line, key, klen) && line[klen] == '=') continue;
@@ -459,10 +486,104 @@ static void store_set(const char *key, const char *value)
         }
         fclose(in);
     }
-    fprintf(out, "%s=%s\n", key, value);
+    if (value) fprintf(out, "%s=%s\n", key, value);
     fclose(out);
     if (chmod(tmp, 0600) != 0) warn_("chmod %s: %s", tmp, strerror(errno));
     if (rename(tmp, path) != 0) die("cannot replace %s: %s", path, strerror(errno));
+}
+
+static void store_set(const char *key, const char *value) { store_put(key, value); }
+static void store_unset(const char *key) { store_put(key, NULL); }
+
+/*
+ * The agent's keys used to be called streq_*: streq_device_key, streq_node_id, ...
+ *
+ * What is moved is only what the agent writes itself — identity and join material. Configuration
+ * (cerberus_api, cerberus_enrollment_token, ...) is written by people and read by the init script,
+ * which looks for both names, so there is nothing to move.
+ *
+ * The old keys are copied and left where they are, deliberately. An older S99cerberus, or an older
+ * binary someone rolls back to, still finds a camera that works; deleting them would buy a tidier
+ * `fw_printenv` and a camera that does not come up. Where an old copy could do harm — a node the
+ * coordinator has forgotten coming back to life on the next start — both names are removed together
+ * (store_forget_enrollment, `clean`).
+ *
+ * One read of the whole store per start, and no write at all once there is nothing left to move: on
+ * a camera every write is a flash erase.
+ */
+static const char *const g_agent_keys[] = {
+    "device_key", "claim_code",     /* first: the identity matters most if this is interrupted */
+    "node_id", "overlay_ip", "hub_endpoint", "hub_pubkey", "allowed_ips", "network_subnet", "hub_ip",
+    NULL
+};
+
+/* `key=value` out of a dump of the whole store; an empty value counts as absent, as in store_get. */
+static int dump_get(const char *dump, const char *key, char *out, size_t out_sz)
+{
+    size_t klen = strlen(key);
+    const char *p = dump;
+
+    while (p && *p) {
+        if (!strncmp(p, key, klen) && p[klen] == '=') {
+            size_t n = strcspn(p + klen + 1, "\r\n");
+            if (n + 1 > out_sz) n = out_sz - 1;
+            memcpy(out, p + klen + 1, n);
+            out[n] = 0;
+            return n > 0;
+        }
+        p = strchr(p, '\n');
+        if (p) p++;
+    }
+    return 0;
+}
+
+static void store_migrate_legacy(void)
+{
+    static char dump[32768];
+    char newk[64], oldk[64], val[512], check[512];
+    size_t n = 0;
+    int whole, i, moved = 0;
+
+    if (store_is_uboot()) {
+        char *argv[] = { "fw_printenv", NULL };
+        if (run(argv, dump, sizeof dump) != 0) return;
+        n = strlen(dump);
+    } else {
+        FILE *f = fopen(store_file(), "r");
+        if (!f) return;
+        n = fread(dump, 1, sizeof dump - 1, f);
+        fclose(f);
+        dump[n] = 0;
+    }
+    /* An environment bigger than the buffer is read key by key instead of trusted half-read. */
+    whole = n + 1 < sizeof dump;
+    if (whole && !strstr(dump, "streq_")) return;
+
+    for (i = 0; g_agent_keys[i]; i++) {
+        snprintf(newk, sizeof newk, "cerberus_%s", g_agent_keys[i]);
+        snprintf(oldk, sizeof oldk, "streq_%s", g_agent_keys[i]);
+        if (whole ? dump_get(dump, newk, val, sizeof val) : store_get(newk, val, sizeof val))
+            continue;
+        if (!(whole ? dump_get(dump, oldk, val, sizeof val) : store_get(oldk, val, sizeof val)))
+            continue;
+        store_set(newk, val);
+        if (!store_get(newk, check, sizeof check) || strcmp(check, val) != 0)
+            die("moving %s to %s did not stick — nothing else is touched until it does", oldk, newk);
+        moved++;
+    }
+    if (moved)
+        note("moved %d key(s) from streq_* to cerberus_*; the streq_* copies stay for older init scripts",
+             moved);
+}
+
+/* Removes both spellings of an agent-written key, so the migration can never bring an old one back. */
+static void store_unset_both(const char *suffix)
+{
+    char key[64];
+    snprintf(key, sizeof key, "cerberus_%s", suffix);
+    store_unset(key);
+    snprintf(key, sizeof key, "streq_%s", suffix);
+    store_unset(key);
 }
 
 /*
@@ -473,22 +594,15 @@ static void store_set(const char *key, const char *value)
  */
 static void store_forget_enrollment(void)
 {
-    static const char *keys[] = {
-        "streq_node_id", "streq_overlay_ip", "streq_hub_endpoint",
-        "streq_hub_pubkey", "streq_allowed_ips", "streq_network_subnet",
-        "streq_hub_ip", NULL
+    static const char *suffixes[] = {
+        "node_id", "overlay_ip", "hub_endpoint", "hub_pubkey", "allowed_ips", "network_subnet",
+        "hub_ip", NULL
     };
     int i;
 
-    for (i = 0; keys[i]; i++) {
-        if (store_is_uboot()) {
-            char *argv[] = { "fw_setenv", (char *)keys[i], NULL };   /* no value = unset */
-            run(argv, NULL, 0);
-        } else {
-            store_set(keys[i], "");
-        }
-    }
-    warn_("enrolment discarded; restart with a fresh STREQ_ENROLLMENT_TOKEN to join again");
+    for (i = 0; suffixes[i]; i++)
+        store_unset_both(suffixes[i]);
+    warn_("enrolment discarded; restart with a fresh CERBERUS_ENROLLMENT_TOKEN to join again");
 }
 
 /* ------------------------------------------------------------------- HTTPS */
@@ -597,7 +711,7 @@ static int http_post_json(const char *url, const char *body, char *resp, size_t 
         if (g_cfg.insecure) {
             /* Dev only. Loud, because an enrollment token in the clear is a device someone else
              * can enroll. */
-            warn_("TLS verification disabled (STREQ_INSECURE=1)");
+            warn_("TLS verification disabled (CERBERUS_INSECURE=1)");
             mbedtls_ssl_conf_authmode(&c.conf, MBEDTLS_SSL_VERIFY_NONE);
         } else {
             struct stat st;
@@ -607,7 +721,7 @@ static int http_post_json(const char *url, const char *body, char *resp, size_t 
                     ? mbedtls_x509_crt_parse_path(&c.ca, g_cfg.ca)
                     : mbedtls_x509_crt_parse_file(&c.ca, g_cfg.ca);
             if (loaded < 0)
-                die("no usable CA trust store at %s (set STREQ_CA)", g_cfg.ca);
+                die("no usable CA trust store at %s (set CERBERUS_CA)", g_cfg.ca);
             mbedtls_ssl_conf_authmode(&c.conf, MBEDTLS_SSL_VERIFY_REQUIRED);
             mbedtls_ssl_conf_ca_chain(&c.conf, &c.ca, NULL);
         }
@@ -701,12 +815,12 @@ static int json_str(const char *json, const char *key, char *out, size_t out_sz)
  *
  * Not from a file on the rootfs, and that is the point. On an OpenIPC camera /etc is squashfs (or an
  * overlay on a partition a firmware update replaces), so a key kept there dies with the next reflash
- * — while `streq_node_id` next to it in the U-Boot environment survives. The node would come back
+ * — while `cerberus_node_id` next to it in the U-Boot environment survives. The node would come back
  * with an identity the hub has a peer for and no key to prove it, and enrolment is skipped whenever a
  * node id is stored: not "re-enrollable", *stuck*. Key and node id have to share a lifetime, so they
  * share a store.
  *
- * An older key sitting in STREQ_KEYFILE is migrated in on sight, once. It is left on disk rather than
+ * An older key sitting in CERBERUS_KEYFILE is migrated in on sight, once. It is left on disk rather than
  * deleted: the reflash that motivates all of this will take it anyway, and a delete racing a failed
  * fw_setenv would be the one unrecoverable outcome here.
  */
@@ -717,9 +831,9 @@ static void device_key(char priv_b64[64], char pub_b64[64])
     size_t olen = 0;
     FILE *f;
 
-    if (store_get("streq_device_key", stored, sizeof stored) && stored[0]) {
+    if (store_get("cerberus_device_key", stored, sizeof stored) && stored[0]) {
         if (b64_decode(stored, priv, sizeof priv, &olen) != 0 || olen != 32)
-            die("streq_device_key is not a base64 WireGuard key");
+            die("cerberus_device_key is not a base64 WireGuard key");
         b64(priv, sizeof priv, priv_b64, 64);   /* re-encode: normalises whatever was stored */
     } else if ((f = fopen(g_cfg.keyfile, "r")) != NULL) {
         int ok = fgets(line, sizeof line, f) != NULL;
@@ -728,14 +842,14 @@ static void device_key(char priv_b64[64], char pub_b64[64])
         if (!ok || b64_decode(line, priv, sizeof priv, &olen) != 0 || olen != 32)
             die("%s is not a base64 WireGuard key", g_cfg.keyfile);
         b64(priv, sizeof priv, priv_b64, 64);
-        store_set("streq_device_key", priv_b64);
+        store_set("cerberus_device_key", priv_b64);
         note("migrated the device key from %s into the store — it now survives a firmware update",
              g_cfg.keyfile);
     } else {
         if (mbedtls_ctr_drbg_random(&g_drbg, priv, sizeof priv) != 0) die("rng failed");
         wg_clamp(priv);
         b64(priv, sizeof priv, priv_b64, 64);
-        store_set("streq_device_key", priv_b64);
+        store_set("cerberus_device_key", priv_b64);
         note("generated a device key into the %s store",
              store_is_uboot() ? "u-boot env" : store_file());
     }
@@ -755,7 +869,7 @@ static int key_materialise(char *path, size_t path_sz)
     int fd;
 
     device_key(priv_b64, pub_b64);
-    snprintf(path, path_sz, "%s", env_or("STREQ_KEY_TMP", "/tmp/.streq-wg.key"));
+    snprintf(path, path_sz, "%s", cfg_env("KEY_TMP", "/tmp/.cerberus-wg.key"));
 
     fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (fd < 0) {
@@ -775,9 +889,9 @@ static int key_materialise(char *path, size_t path_sz)
 static void claim_code_get(char *code, size_t code_sz)
 {
     char fresh[13];
-    if (store_get("streq_claim_code", code, code_sz) && code[0]) return;
+    if (store_get("cerberus_claim_code", code, code_sz) && code[0]) return;
     claim_code_new(fresh);
-    store_set("streq_claim_code", fresh);
+    store_set("cerberus_claim_code", fresh);
     snprintf(code, code_sz, "%s", fresh);
 }
 
@@ -792,14 +906,14 @@ static int enroll(void)
     char node[128], ip[64], ep[256], hubkey[64], allowed[80], subnet[64], hubip[64];
     int status = 0;
 
-    if (store_get("streq_node_id", node, sizeof node)) {
-        store_get("streq_overlay_ip", ip, sizeof ip);
+    if (store_get("cerberus_node_id", node, sizeof node)) {
+        store_get("cerberus_overlay_ip", ip, sizeof ip);
         note("already enrolled as %s (overlay %s)", node, ip[0] ? ip : "?");
         return 0;
     }
 
     if (!*g_cfg.token)
-        die("not enrolled and no STREQ_ENROLLMENT_TOKEN set");
+        die("not enrolled and no CERBERUS_ENROLLMENT_TOKEN set");
 
     device_key(priv_b64, pub_b64);
     claim_code_get(code, sizeof code);
@@ -839,19 +953,19 @@ static int enroll(void)
         snprintf(allowed, sizeof allowed, "%s/32", ip);
 
     /* Подсеть своей сети и адрес хаба. Их может не быть — координатор старше арендаторов; тогда
-     * работает STREQ_SUBNET, как и раньше. */
+     * работает CERBERUS_SUBNET, как и раньше. */
     if (!json_str(resp, "networkSubnet", subnet, sizeof subnet)) subnet[0] = 0;
     if (!json_str(resp, "hubOverlayIp", hubip, sizeof hubip)) hubip[0] = 0;
 
     /* Persist before touching the interface: a camera that got a peer on the hub and then lost the
      * material would re-enroll on the next boot with a token already spent. */
-    store_set("streq_node_id", node);
-    store_set("streq_overlay_ip", ip);
-    store_set("streq_hub_endpoint", ep);
-    store_set("streq_hub_pubkey", hubkey);
-    store_set("streq_allowed_ips", allowed);
-    if (subnet[0]) store_set("streq_network_subnet", subnet);
-    if (hubip[0]) store_set("streq_hub_ip", hubip);
+    store_set("cerberus_node_id", node);
+    store_set("cerberus_overlay_ip", ip);
+    store_set("cerberus_hub_endpoint", ep);
+    store_set("cerberus_hub_pubkey", hubkey);
+    store_set("cerberus_allowed_ips", allowed);
+    if (subnet[0]) store_set("cerberus_network_subnet", subnet);
+    if (hubip[0]) store_set("cerberus_hub_ip", hubip);
 
     note("enrolled as %s, overlay %s/%s via hub %s", node, ip, subnet[0] ? subnet : "?", ep);
     note("claim code: %.4s-%.4s-%.4s — enter it in the panel to bind this camera to an account",
@@ -876,16 +990,16 @@ static int prefix_of(const char *cidr)
  * it, or the camera keeps answering on an address the coordinator has already handed to somebody else.
  */
 /*
- * Подсеть, в которой стоит этот узел: из стора, если координатор её назвал, иначе STREQ_SUBNET.
+ * Подсеть, в которой стоит этот узел: из стора, если координатор её назвал, иначе CERBERUS_SUBNET.
  *
  * With one network per instance these are the same string. With tenants they are not: the node's
- * own /24 is what it may claim on the interface, and STREQ_SUBNET is a guess made by whoever wrote
+ * own /24 is what it may claim on the interface, and CERBERUS_SUBNET is a guess made by whoever wrote
  * the u-boot environment — usually the instance-wide pool, which belongs to everybody.
  */
 static const char *node_subnet(void)
 {
     static char subnet[64];
-    if (store_get("streq_network_subnet", subnet, sizeof subnet) && subnet[0])
+    if (store_get("cerberus_network_subnet", subnet, sizeof subnet) && subnet[0])
         return subnet;
     return g_cfg.subnet;
 }
@@ -894,7 +1008,7 @@ static const char *node_subnet(void)
 static const char *hub_overlay_ip(void)
 {
     static char hubip[64];
-    if (store_get("streq_hub_ip", hubip, sizeof hubip) && hubip[0])
+    if (store_get("cerberus_hub_ip", hubip, sizeof hubip) && hubip[0])
         return hubip;
     return "";
 }
@@ -905,9 +1019,9 @@ static int link_apply(int flush)
     const char *subnet, *hubip;
     int rc;
 
-    if (!store_get("streq_overlay_ip", ip, sizeof ip) ||
-        !store_get("streq_hub_endpoint", ep, sizeof ep) ||
-        !store_get("streq_hub_pubkey", hubkey, sizeof hubkey)) {
+    if (!store_get("cerberus_overlay_ip", ip, sizeof ip) ||
+        !store_get("cerberus_hub_endpoint", ep, sizeof ep) ||
+        !store_get("cerberus_hub_pubkey", hubkey, sizeof hubkey)) {
         warn_("no stored join material — run `cerberus enroll` first");
         return 1;
     }
@@ -988,7 +1102,7 @@ static long handshake_age(void)
 /*
  * Кого пинговать внутри туннеля. Хаб: единственный пир камеры и первый адрес подсети (10.80.0.0/16 →
  * 10.80.0.1, ровно так его поднимает хаб). Материал вступления его не называет —
- * узлу он больше ни для чего не нужен — поэтому адрес выводится из подсети, а STREQ_PING_TARGET
+ * узлу он больше ни для чего не нужен — поэтому адрес выводится из подсети, а CERBERUS_PING_TARGET
  * перекрывает вывод там, где хаб стоит не на первом адресе.
  */
 static const char *ping_target(void)
@@ -1091,35 +1205,35 @@ static void apply_directive(const char *json)
     int rotated = 0;
 
     if (json_str(json, "hubEndpoint", ep, sizeof ep) &&
-        (!store_get("streq_hub_endpoint", cur, sizeof cur) || strcmp(cur, ep) != 0)) {
+        (!store_get("cerberus_hub_endpoint", cur, sizeof cur) || strcmp(cur, ep) != 0)) {
         note("hub endpoint rotated: %s -> %s", cur[0] ? cur : "(none)", ep);
-        store_set("streq_hub_endpoint", ep);
+        store_set("cerberus_hub_endpoint", ep);
         rotated = 1;
     }
     if (json_str(json, "hubPublicKey", hubkey, sizeof hubkey) &&
-        (!store_get("streq_hub_pubkey", cur, sizeof cur) || strcmp(cur, hubkey) != 0)) {
+        (!store_get("cerberus_hub_pubkey", cur, sizeof cur) || strcmp(cur, hubkey) != 0)) {
         note("hub public key rotated");
-        store_set("streq_hub_pubkey", hubkey);
+        store_set("cerberus_hub_pubkey", hubkey);
         rotated = 1;
     }
     if (json_str(json, "overlayIp", ip, sizeof ip) &&
-        (!store_get("streq_overlay_ip", cur, sizeof cur) || strcmp(cur, ip) != 0)) {
+        (!store_get("cerberus_overlay_ip", cur, sizeof cur) || strcmp(cur, ip) != 0)) {
         note("overlay address rotated: %s -> %s", cur[0] ? cur : "(none)", ip);
-        store_set("streq_overlay_ip", ip);
+        store_set("cerberus_overlay_ip", ip);
         rotated = 1;
     }
     if (json_str(json, "allowedIps", allowed, sizeof allowed))
-        store_set("streq_allowed_ips", allowed);
+        store_set("cerberus_allowed_ips", allowed);
     if (json_str(json, "networkSubnet", fresh, sizeof fresh) && fresh[0] &&
-        (!store_get("streq_network_subnet", cur, sizeof cur) || strcmp(cur, fresh) != 0)) {
+        (!store_get("cerberus_network_subnet", cur, sizeof cur) || strcmp(cur, fresh) != 0)) {
         note("network subnet rotated: %s -> %s", cur[0] ? cur : "(none)", fresh);
-        store_set("streq_network_subnet", fresh);
+        store_set("cerberus_network_subnet", fresh);
         rotated = 1;
     }
     if (json_str(json, "hubOverlayIp", fresh, sizeof fresh) && fresh[0] &&
-        (!store_get("streq_hub_ip", cur, sizeof cur) || strcmp(cur, fresh) != 0)) {
+        (!store_get("cerberus_hub_ip", cur, sizeof cur) || strcmp(cur, fresh) != 0)) {
         note("hub overlay address rotated: %s -> %s", cur[0] ? cur : "(none)", fresh);
-        store_set("streq_hub_ip", fresh);
+        store_set("cerberus_hub_ip", fresh);
         rotated = 1;
     }
 
@@ -1174,10 +1288,10 @@ static int watch(void)
 
     catch_signals();   /* повторно — безвредно; watch() бывает и точкой входа отладки */
 
-    if (!store_get("streq_hub_endpoint", ep, sizeof ep) ||
-        !store_get("streq_hub_pubkey", hubkey, sizeof hubkey))
+    if (!store_get("cerberus_hub_endpoint", ep, sizeof ep) ||
+        !store_get("cerberus_hub_pubkey", hubkey, sizeof hubkey))
         return 1;
-    store_get("streq_node_id", node, sizeof node);
+    store_get("cerberus_node_id", node, sizeof node);
     snprintf(beat_url, sizeof beat_url, "%s/nodes/%s/heartbeat", g_cfg.api, node);
 
     tick = g_cfg.watch_interval;
@@ -1199,8 +1313,8 @@ static int watch(void)
                 misses++;
                 warn_("no handshake for %lds (miss %d) — re-resolving %s", age, misses, ep);
                 /* Re-read: a directive may have rotated the hub since this loop started. */
-                store_get("streq_hub_endpoint", ep, sizeof ep);
-                store_get("streq_hub_pubkey", hubkey, sizeof hubkey);
+                store_get("cerberus_hub_endpoint", ep, sizeof ep);
+                store_get("cerberus_hub_pubkey", hubkey, sizeof hubkey);
                 if (*hub_overlay_ip())
                     runf("wg set %s peer %s endpoint %s allowed-ips %s,%s/32 persistent-keepalive 25",
                          g_cfg.iface, hubkey, ep, node_subnet(), hub_overlay_ip());
@@ -1307,15 +1421,15 @@ static int cmd_status(void)
     char v[512];
     long age;
     printf("store          %s\n", store_is_uboot() ? "u-boot env (fw_setenv)" : store_file());
-    printf("node           %s\n", store_get("streq_node_id", v, sizeof v) ? v : "(not enrolled)");
-    printf("device key     %s\n", store_get("streq_device_key", v, sizeof v) ? "in the store" : "-");
-    printf("overlay ip     %s\n", store_get("streq_overlay_ip", v, sizeof v) ? v : "-");
-    printf("hub endpoint   %s\n", store_get("streq_hub_endpoint", v, sizeof v) ? v : "-");
-    printf("hub public key %s\n", store_get("streq_hub_pubkey", v, sizeof v) ? v : "-");
+    printf("node           %s\n", store_get("cerberus_node_id", v, sizeof v) ? v : "(not enrolled)");
+    printf("device key     %s\n", store_get("cerberus_device_key", v, sizeof v) ? "in the store" : "-");
+    printf("overlay ip     %s\n", store_get("cerberus_overlay_ip", v, sizeof v) ? v : "-");
+    printf("hub endpoint   %s\n", store_get("cerberus_hub_endpoint", v, sizeof v) ? v : "-");
+    printf("hub public key %s\n", store_get("cerberus_hub_pubkey", v, sizeof v) ? v : "-");
     printf("network subnet %s%s\n", node_subnet(),
-           store_get("streq_network_subnet", v, sizeof v) ? "" : " (из STREQ_SUBNET)");
-    printf("hub overlay ip %s\n", *hub_overlay_ip() ? hub_overlay_ip() : "- (внутри своей подсети)");
-    printf("claim code     %s\n", store_get("streq_claim_code", v, sizeof v) ? v : "-");
+           store_get("cerberus_network_subnet", v, sizeof v) ? "" : " (from CERBERUS_SUBNET)");
+    printf("hub overlay ip %s\n", *hub_overlay_ip() ? hub_overlay_ip() : "- (inside its own subnet)");
+    printf("claim code     %s\n", store_get("cerberus_claim_code", v, sizeof v) ? v : "-");
     age = handshake_age();
     if (age < 0) printf("handshake      never\n");
     else printf("handshake      %lds ago\n", age);
@@ -1350,12 +1464,11 @@ static int cmd_keygen(void)
  */
 static int cmd_clean(void)
 {
-    static const char *keys[] = {
-        "streq_node_id", "streq_overlay_ip", "streq_hub_endpoint", "streq_hub_pubkey",
-        "streq_allowed_ips", "streq_network_subnet", "streq_hub_ip", "streq_claim_code",
-        "streq_device_key", "streq_api", "streq_enrollment_token", "streq_hostname",
-        "streq_kind", "streq_iface", "streq_subnet", "streq_ca", "streq_heartbeat",
-        "streq_ping_target", "streq_ping_interval", "streq_ping_timeout", "streq_ping_fails",
+    /* Both spellings of each: whatever an older install left under streq_* goes too. */
+    static const char *suffixes[] = {
+        "node_id", "overlay_ip", "hub_endpoint", "hub_pubkey", "allowed_ips", "network_subnet",
+        "hub_ip", "claim_code", "device_key", "api", "enrollment_token", "hostname", "kind", "iface",
+        "subnet", "ca", "heartbeat", "ping_target", "ping_interval", "ping_timeout", "ping_fails",
         NULL
     };
     char self[256];
@@ -1375,14 +1488,8 @@ static int cmd_clean(void)
     if (unlink(INIT_SCRIPT) != 0 && errno != ENOENT)
         warn_("cannot remove %s: %s", INIT_SCRIPT, strerror(errno));
 
-    for (i = 0; keys[i]; i++) {
-        if (store_is_uboot()) {
-            char *argv[] = { "fw_setenv", (char *)keys[i], NULL };   /* без значения — сброс */
-            run(argv, NULL, 0);
-        } else {
-            store_set(keys[i], "");
-        }
-    }
+    for (i = 0; suffixes[i]; i++)
+        store_unset_both(suffixes[i]);
     if (!store_is_uboot())
         unlink(store_file());
 
@@ -1402,31 +1509,32 @@ static int cmd_clean(void)
 static void usage(void)
 {
     fputs(
-        "cerberus " CERBERUS_VERSION " — on-camera Streq agent\n"
+        "cerberus " CERBERUS_VERSION " — on-camera cloud agent for OpenIPC\n"
         "\n"
-        "usage: cerberus [enroll|up|run|status|keygen]\n"
+        "usage: cerberus [enroll|up|run|status|keygen|clean]\n"
         "  enroll   enroll into the coordinator and persist the join material (idempotent)\n"
         "  up       program the WireGuard interface from the stored material\n"
         "  run      enroll + up + watch the tunnel (the default; what the init script calls)\n"
         "  status   print what is stored, how old the handshake is, whether the tunnel answers\n"
         "  keygen   print the device keypair (private, public), creating it if needed\n"
+        "  clean    remove the agent: interface, init script, stored material, the binary\n"
         "\n"
-        "config (env):\n"
-        "  STREQ_API                coordinator base URL incl. /v1  [https://api.localhost/v1]\n"
-        "  STREQ_ENROLLMENT_TOKEN   one-shot token from the owner\n"
-        "  STREQ_KIND               node kind  [Camera]\n"
-        "  STREQ_IFACE              WireGuard interface  [wg0]\n"
-        "  STREQ_SUBNET             overlay CIDR routed to the hub  [10.80.0.0/16]\n"
-        "  STREQ_CA                 CA file or dir for TLS  [/etc/ssl/certs/ca-certificates.crt]\n"
-        "  STREQ_INSECURE=1         skip TLS verification (dev only)\n"
-        "  STREQ_STORE              auto | uboot | file:/path  [auto] — holds the device key too\n"
-        "  STREQ_KEYFILE            legacy key file, migrated into the store  [/etc/streq/wg.key]\n"
-        "  STREQ_HEARTBEAT          seconds between heartbeats; 0 disables  [20]\n"
-        "  STREQ_PING_TARGET        in-tunnel probe target  [first address of STREQ_SUBNET]\n"
-        "  STREQ_PING_INTERVAL      seconds between probes; 0 disables  [60]\n"
-        "  STREQ_PING_TIMEOUT       seconds one probe waits  [3]\n"
-        "  STREQ_PING_FAILS         failed probes before the interface is rebuilt  [3]\n"
-        "  STREQ_DRY_RUN=1          print ip/wg commands instead of running them\n",
+        "config (env; the old STREQ_* names are accepted too):\n"
+        "  CERBERUS_API                coordinator base URL incl. /v1  [https://api.localhost/v1]\n"
+        "  CERBERUS_ENROLLMENT_TOKEN   one-shot token from the owner\n"
+        "  CERBERUS_KIND               node kind  [Camera]\n"
+        "  CERBERUS_IFACE              WireGuard interface  [wg0]\n"
+        "  CERBERUS_SUBNET             overlay CIDR routed to the hub  [10.80.0.0/16]\n"
+        "  CERBERUS_CA                 CA file or dir for TLS  [/etc/ssl/certs/ca-certificates.crt]\n"
+        "  CERBERUS_INSECURE=1         skip TLS verification (dev only)\n"
+        "  CERBERUS_STORE              auto | uboot | file:/path  [auto] — holds the device key too\n"
+        "  CERBERUS_KEYFILE            legacy key file, migrated into the store  [/etc/streq/wg.key]\n"
+        "  CERBERUS_HEARTBEAT          seconds between heartbeats; 0 disables  [20]\n"
+        "  CERBERUS_PING_TARGET        in-tunnel probe target  [the hub]\n"
+        "  CERBERUS_PING_INTERVAL      seconds between probes; 0 disables  [60]\n"
+        "  CERBERUS_PING_TIMEOUT       seconds one probe waits  [3]\n"
+        "  CERBERUS_PING_FAILS         failed probes before the interface is rebuilt  [3]\n"
+        "  CERBERUS_DRY_RUN=1          print ip/wg commands instead of running them\n",
         stderr);
 }
 
@@ -1441,6 +1549,10 @@ int main(int argc, char **argv)
 
     cfg_load();
     crypto_init();
+
+    /* Before anything reads the store: `clean` removes both spellings itself. */
+    if (strcmp(cmd, "clean") != 0)
+        store_migrate_legacy();
 
     if (!strcmp(cmd, "status")) return cmd_status();
     if (!strcmp(cmd, "keygen")) return cmd_keygen();

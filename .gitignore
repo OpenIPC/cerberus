@@ -2,3 +2,4 @@
 /cerberus
 /dist/
 *.o
+/.cache/
