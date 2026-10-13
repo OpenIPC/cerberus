@@ -144,6 +144,8 @@ BUILD
 
 	cp S99cerberus "$stage/S99cerberus"
 	chmod 755 "$stage/S99cerberus"
+	# The licence travels with every copy, binaries included: its Notices rule asks for exactly that.
+	cp LICENSE.md "$stage/LICENSE.md"
 
 	cat >"$stage/install.sh" <<'EOF'
 #!/bin/sh
@@ -191,6 +193,9 @@ $LIBC_NOTE
 
 Full guide, variables and troubleshooting: https://cloud.openipc.ru/docs/openipc-camera/
 Source: https://github.com/OpenIPC/cerberus
+
+Licensed under the Prosperity Public License 3.0.0 — see LICENSE.md: free for noncommercial use,
+a thirty-day trial for commercial use.
 EOF
 
 	# Packed inside a container, from a copy that is not on a bind mount: a Windows host has no
@@ -205,7 +210,7 @@ cd /tmp
 cp -r "/out/$STAGE" .
 cd "$STAGE"
 chmod 0755 cerberus install.sh S99cerberus
-chmod 0644 README.md
+chmod 0644 README.md LICENSE.md
 cd /tmp
 tar -czf "/out/$STAGE.tar.gz" "$STAGE"
 PACK

@@ -302,3 +302,10 @@ the hub path — which is exactly the path that always works.
 
 Video does not pass through the agent at all: the relay pulls `rtsp://{overlayIp}:554/stream0`
 straight from the camera through the tunnel.
+
+## License
+
+[The Prosperity Public License 3.0.0](LICENSE.md), © OpenIPC. Free for noncommercial use —
+personal, hobby, research, and noncommercial organizations — and a thirty-day trial for commercial
+use; commercial use beyond the trial is not covered by this license. Every copy, binaries included,
+carries the license text with it, which is why the release tarballs ship `LICENSE.md`.
