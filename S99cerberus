@@ -1,43 +1,45 @@
 #!/bin/sh
 # OpenIPC uses BusyBox init, not systemd. Config lives in the U-Boot environment, which is also
-# where cerberus persists the join material it gets back from the coordinator.
+# where cerberus keeps the join material it gets back from the coordinator, so a camera is
+# provisioned with `fw_setenv` and a restart, without touching the read-only rootfs.
 
 DAEMON=/usr/sbin/cerberus
 PIDFILE=/var/run/cerberus.pid
 
-# Read the deployment config out of the U-Boot env (streq_api, streq_enrollment_token, ...) so a
-# camera is provisioned with `fw_setenv` and a reboot, without touching the read-only rootfs.
-export STREQ_API="$(fw_printenv -n streq_api 2>/dev/null)"
-export STREQ_ENROLLMENT_TOKEN="$(fw_printenv -n streq_enrollment_token 2>/dev/null)"
-export STREQ_SUBNET="$(fw_printenv -n streq_subnet 2>/dev/null)"
+# cerberus_<name>, or streq_<name> — what the keys were called before the agent was renamed. A
+# missing key is harmless: an empty variable means "the default" to the agent.
+uenv() {
+	fw_printenv -n "cerberus_$1" 2>/dev/null || fw_printenv -n "streq_$1" 2>/dev/null
+}
 
-# Пустая переменная для агента означает "как по умолчанию" (env_or), поэтому отсутствующий ключ в
-# u-boot env безвреден и все, что ниже, необязательно.
-#
-# streq_ca — не роскошь: прошивка может не нести бандл доверенных CA вовсе, и тогда энролл падает на
-# проверке сертификата координатора, а поправить это, не перепрошивая камеру, больше нечем. Класть
-# туда путь к корневому сертификату (ISRG Root X1 для Let's Encrypt, или свой CA).
-export STREQ_CA="$(fw_printenv -n streq_ca 2>/dev/null)"
-# Имя, под которым камера появится в панели; иначе там будет один id.
-export STREQ_HOSTNAME="$(fw_printenv -n streq_hostname 2>/dev/null)"
-# Адрес для пробы внутри туннеля (по умолчанию выводится из streq_subnet) и её период.
-export STREQ_PING_TARGET="$(fw_printenv -n streq_ping_target 2>/dev/null)"
-export STREQ_PING_INTERVAL="$(fw_printenv -n streq_ping_interval 2>/dev/null)"
-STREQ_IFACE=$(fw_printenv -n streq_iface 2>/dev/null)
-export STREQ_IFACE=${STREQ_IFACE:-wg0}
+export CERBERUS_API="$(uenv api)"
+export CERBERUS_ENROLLMENT_TOKEN="$(uenv enrollment_token)"
+export CERBERUS_HOSTNAME="$(uenv hostname)"
+# A firmware may carry no CA bundle at all; then enrolment fails on the coordinator's certificate
+# and nothing short of a reflash fixes it. Point cerberus_ca at the root certificate instead.
+export CERBERUS_CA="$(uenv ca)"
+export CERBERUS_KIND="$(uenv kind)"
+export CERBERUS_SUBNET="$(uenv subnet)"
+export CERBERUS_HEARTBEAT="$(uenv heartbeat)"
+export CERBERUS_PING_TARGET="$(uenv ping_target)"
+export CERBERUS_PING_INTERVAL="$(uenv ping_interval)"
+export CERBERUS_PING_TIMEOUT="$(uenv ping_timeout)"
+export CERBERUS_PING_FAILS="$(uenv ping_fails)"
+CERBERUS_IFACE=$(uenv iface)
+export CERBERUS_IFACE=${CERBERUS_IFACE:-wg0}
 
 case "$1" in
 	start)
-		[ -n "$STREQ_API" ] || { echo "streq: not provisioned (fw_setenv streq_api ...)"; exit 0; }
+		[ -n "$CERBERUS_API" ] || { echo "cerberus: not provisioned (fw_setenv cerberus_api ...)"; exit 0; }
 		echo "Starting cerberus..."
 		start-stop-daemon -S -q -m -b -p $PIDFILE -x $DAEMON -- run
 		;;
 	stop)
 		echo "Stopping cerberus..."
 		start-stop-daemon -K -q -p $PIDFILE
-		# Интерфейса может не быть — агент мог не дойти до его подъёма. Это не повод завершиться с
-		# ошибкой: для init "stop" неподнятого сервиса обязан быть успехом.
-		ip link del dev "$STREQ_IFACE" 2>/dev/null || true
+		# The agent may never have got as far as the interface; for init, stopping a service that
+		# is not up is still a success.
+		ip link del dev "$CERBERUS_IFACE" 2>/dev/null || true
 		;;
 	restart|reload)
 		"$0" stop

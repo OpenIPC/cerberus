@@ -19,16 +19,16 @@ jobs:
     # a key that is not set is simply empty.
     steps:
       - uses: actions/checkout@v4
-      - run: shellcheck -S warning -e SC2155 S99cerberus bootstrap.sh uninstall.sh ci/build.sh tests/run.sh tests/suite.sh
+      - run: shellcheck -S warning -e SC2155 S99cerberus install.sh uninstall.sh ci/build.sh ci/assemble.sh tests/run.sh tests/suite.sh
 
   test:
     name: tests (${{ matrix.name }})
     runs-on: ubuntu-latest
-    # Both mbedTLS generations are in the field: 3.x on current distros and in Alpine (musl, which is
-    # what OpenIPC is), 2.28 LTS in Buildroot-era firmware — and Debian bookworm carries exactly that.
-    # The suite builds with -Werror, enrols against a fake coordinator over real TLS, and brings up a
-    # real WireGuard tunnel to a hub in its own netns; REQUIRE_WG turns a runner without kernel
-    # WireGuard into a failure instead of a silently skipped section. ubuntu-latest has it.
+    # Both mbedTLS generations are in the field: 3.x on current distros and in Alpine, 2.28 LTS in
+    # Buildroot-era firmware — and Debian bookworm carries exactly that. The suite builds with -Werror,
+    # enrols against a fake coordinator over real TLS, walks the streq_* -> cerberus_* migration and the
+    # installer, and brings up a real WireGuard tunnel to a hub in its own netns; REQUIRE_WG turns a
+    # runner without kernel WireGuard into a failure instead of a silently skipped section.
     strategy:
       fail-fast: false
       matrix:
@@ -49,61 +49,63 @@ jobs:
   build:
     name: build (${{ matrix.arch }})
     runs-on: ubuntu-latest
-    # The real target is arm; a compile-only x64 job would keep reporting green while the binary the
-    # firmware needs does not exist. musl-armv7 is the artefact that actually goes into OpenIPC
-    # firmware and builds in an emulated armv7 Alpine, so it is the one target here that needs binfmt.
-    # The ELF-architecture assertion lives in the script, next to the build that produced the binary.
+    # One static musl binary per CPU architecture, which is what a camera's installer downloads. The
+    # script asserts the ELF machine and static linking, and then runs the binary under QEMU and
+    # checks its X25519 key against `wg pubkey` — a binary for the right machine can still die on its
+    # first instruction, and only running it shows that.
     strategy:
       fail-fast: false
       matrix:
-        arch: [musl-armv7, armhf, arm64, amd64]
+        arch: [arm, mipsel, aarch64, x86_64]
     steps:
       - uses: actions/checkout@v4
         with:
           # git describe needs the tags: the version compiled into the binary comes from them.
           fetch-depth: 0
 
-      - name: Enable arm emulation
-        if: matrix.arch == 'musl-armv7'
-        uses: docker/setup-qemu-action@v3
+      - name: Toolchain and mbedTLS cache
+        uses: actions/cache@v4
         with:
-          platforms: arm
+          path: .cache
+          key: toolchain-${{ matrix.arch }}-${{ hashFiles('ci/build.sh') }}
 
-      - name: Build and package
+      - name: Build
         run: ci/build.sh ${{ matrix.arch }}
 
       - uses: actions/upload-artifact@v4
         with:
           name: cerberus-${{ matrix.arch }}
-          path: dist/*.tar.gz*
+          path: dist/cerberus-${{ matrix.arch }}
           if-no-files-found: error
 
   release:
     name: release
-    # A v* tag publishes the tarballs that were just built and tested — the same artefacts, not a
-    # rebuild — as a GitHub release.
+    # A v* tag publishes the binaries that were just built and tested — the same files, not a rebuild —
+    # together with the installer, the uninstaller, the init script and SHA256SUMS over all of them.
+    # Asset names carry no version: cameras fetch releases/latest/download/<name>.
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [lint, test, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           pattern: cerberus-*
           path: dist
           merge-multiple: true
 
-      - name: Every tarball carries the tag's version
+      - name: The binaries were built as this tag
         run: |
-          want="${GITHUB_REF_NAME#v}"
-          ls dist
-          for f in dist/*.tar.gz; do
-            case "$(basename "$f")" in
-              "cerberus-$want-linux-"*) ;;
-              *) echo "$f was not built as $want"; exit 1 ;;
-            esac
-          done
+          chmod +x dist/cerberus-*
+          got=$(dist/cerberus-x86_64 --help 2>&1 | head -1 | cut -d' ' -f2)
+          echo "binary says $got, tag says ${GITHUB_REF_NAME#v}"
+          [ "$got" = "${GITHUB_REF_NAME#v}" ]
+
+      - name: Lay out the release
+        run: ci/assemble.sh
 
       - name: Publish
         env:
