@@ -501,6 +501,7 @@ check "signed by the device key" \
 	"$(q "print(all(r['verified'] for r in R if r['path'].endswith('/events')))")" "True"
 check "frames follow, as many as asked" \
 	"$(q "print(sum(1 for r in R if '/frames/' in r['path']))")" "2"
+check "the first taken before the cloud was asked" 	"$(q "i = next(i for i, r in enumerate(R) if r['path'].endswith('/events') and r['body'].get('phase') == 'started'); print(R[i - 1]['path'].startswith('majestic:'))")" "True"
 check "each a signed JPEG" \
 	"$(q "print(all(r['verified'] and r['jpeg'] and r['contentType'] == 'image/jpeg' for r in R if '/frames/' in r['path']))")" "True"
 check "and the episode ends on its own" \
