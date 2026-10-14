@@ -34,10 +34,12 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -47,9 +49,9 @@
 #include <mbedtls/bignum.h>
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/ecp.h>
-#include <mbedtls/entropy.h>
 #include <mbedtls/md.h>
 #include <mbedtls/net_sockets.h>
+#include <mbedtls/platform_util.h>
 #include <mbedtls/sha256.h>
 #include <mbedtls/ssl.h>
 #include <mbedtls/version.h>
@@ -68,7 +70,7 @@
 
 /* Release builds pass the tag in (`make VERSION=...`); a plain `make` reports the source version. */
 #ifndef CERBERUS_VERSION
-#define CERBERUS_VERSION "0.2.0"
+#define CERBERUS_VERSION "0.2.1"
 #endif
 
 /* Where the errors are decoded. Printed after every fatal one: the reader is on a camera
@@ -152,6 +154,9 @@ struct cfg {
     int snapshot_max;           /* largest frame we accept from majestic, bytes */
     int motion_quiet;           /* seconds without motion that end an episode */
     int motion_max;             /* an episode is cut after this many seconds, whatever happens */
+    const char *seed;           /* randomness kept between starts, so a start never waits on the kernel */
+    const char *random_dev;     /* the kernel's random device */
+    int getrandom;              /* ask getrandom(2) first; 0 for a kernel whose getrandom misbehaves */
 };
 
 static struct cfg g_cfg;
@@ -223,25 +228,196 @@ static void cfg_load(void)
     if (g_cfg.snapshot_max < 16384) g_cfg.snapshot_max = 16384;
     if (g_cfg.motion_quiet < 1) g_cfg.motion_quiet = 1;
     if (g_cfg.motion_max < g_cfg.motion_quiet) g_cfg.motion_max = g_cfg.motion_quiet;
+
+    g_cfg.seed = cfg_env("SEED", "/etc/cerberus/seed");
+    g_cfg.random_dev = cfg_env("RANDOM_DEV", "/dev/urandom");
+    g_cfg.getrandom = atoi(cfg_env("GETRANDOM", "1"));
 }
 
 /* ------------------------------------------------------------------ crypto */
 
-static mbedtls_entropy_context g_entropy;
+/*
+ * Randomness, and why a start must not wait for it.
+ *
+ * mbedTLS seeds itself from the kernel: getrandom(2), or /dev/urandom where the kernel predates it.
+ * On some cameras that read blocks for minutes, and on every start, because each start drains what
+ * the kernel had gathered and an idle camera gathers it slowly. It used to happen before any
+ * command at all — `cerberus status` included — and after every restart the agent sat silent for
+ * those minutes before it said a word to the cloud.
+ *
+ * Two things fix it. Nothing seeds until something actually needs randomness (TLS, a key, an
+ * episode id): `status`, `snapshot`, `motion` and `clean` never touch it. And what seeds is not the
+ * kernel alone: whatever it hands over right now without waiting, mixed with a seed kept from the
+ * previous start and replaced on every one. Waiting on the kernel happens once in a device's life —
+ * the very first start, when there is no seed yet and the kernel has nothing ready — never again.
+ *
+ * The seed file is as secret as the device key in the store, and no more: whoever can read one can
+ * read the other.
+ */
 static mbedtls_ctr_drbg_context g_drbg;
+static int g_drbg_ready;
+static int g_seeded;    /* seeded once in this process: a reseed later never waits */
+
+#define SEED_LEN 32
+#define GRND_NONBLOCK_ 0x0001
+
+#if defined(SYS_getrandom)
+/* _POSIX_C_SOURCE hides syscall()'s prototype; it is the same in every libc. */
+long syscall(long number, ...);
+#endif
+
+static void mkparent(const char *path);
+
+/* Fills `out` from `path`, or fails whole. `nonblock` turns "would wait" into a failure. */
+static int read_exact(const char *path, int nonblock, unsigned char *out, size_t len)
+{
+    size_t n = 0;
+    int fd = open(path, O_RDONLY | (nonblock ? O_NONBLOCK : 0));
+
+    if (fd < 0) return 0;
+    while (n < len) {
+        ssize_t r = read(fd, out + n, len - n);
+        if (r > 0) { n += (size_t)r; continue; }
+        if (r < 0 && errno == EINTR) continue;
+        break;   /* EOF, EAGAIN (nothing ready) or a real error: all the same here */
+    }
+    close(fd);
+    return n == len;
+}
+
+/* What the kernel has ready this instant, or nothing. */
+static int kernel_random_now(unsigned char *out, size_t len)
+{
+#if defined(SYS_getrandom)
+    if (g_cfg.getrandom && syscall(SYS_getrandom, out, len, GRND_NONBLOCK_) == (long)len)
+        return 1;
+#endif
+    return read_exact(g_cfg.random_dev, 1, out, len);
+}
+
+static void seed_write(const unsigned char seed[SEED_LEN])
+{
+    static int said;
+    char tmp[320];
+    int fd, ok;
+
+    snprintf(tmp, sizeof tmp, "%s.new", g_cfg.seed);
+    mkparent(g_cfg.seed);
+    fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    ok = fd >= 0 && write(fd, seed, SEED_LEN) == SEED_LEN;
+    if (fd >= 0 && close(fd) != 0) ok = 0;
+    if (ok && rename(tmp, g_cfg.seed) != 0) ok = 0;
+    if (!ok) {
+        if (fd >= 0) unlink(tmp);
+        if (!said++)
+            warn_("cannot keep the random seed in %s (%s) — every start asks the kernel again",
+                  g_cfg.seed, strerror(errno));
+    }
+}
+
+/* HMAC-SHA256 over two parts; defined with the event signing below. */
+static int hmac256(const unsigned char *key, size_t key_len,
+                   const unsigned char *a, size_t a_len,
+                   const unsigned char *b, size_t b_len, unsigned char out[32]);
+
+/*
+ * The generator's entropy callback: kernel bytes that are ready now, the kept seed, the time and the
+ * pid, hashed into as many bytes as asked; a counter keeps any two calls in a process apart. It
+ * blocks in exactly one case — nothing strong at all, on the first seeding — and then on the kernel
+ * alone, which is what mbedTLS used to do on every start.
+ */
+static int entropy_cb(void *unused, unsigned char *out, size_t len)
+{
+    static unsigned long calls;
+    unsigned char pool[48 + SEED_LEN + 2 * sizeof(struct timespec) + sizeof(long)];
+    unsigned char block[32], tag[sizeof(unsigned long) + 4];
+    size_t n = 0, done = 0;
+    int strong = 0;
+    struct timespec ts;
+    unsigned long ctr = ++calls;
+    long pid = (long)getpid();
+
+    (void)unused;
+
+    if (kernel_random_now(pool, 48)) { n += 48; strong = 1; }
+    if (read_exact(g_cfg.seed, 0, pool + n, SEED_LEN)) { n += SEED_LEN; strong = 1; }
+    if (!strong && !g_seeded) {
+        note("waiting for the kernel's randomness — once, the first time on this device");
+        if (!read_exact(g_cfg.random_dev, 0, pool + n, 48)) return -1;
+        n += 48;
+    }
+    clock_gettime(CLOCK_REALTIME, &ts);
+    memcpy(pool + n, &ts, sizeof ts);
+    n += sizeof ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    memcpy(pool + n, &ts, sizeof ts);
+    n += sizeof ts;
+    memcpy(pool + n, &pid, sizeof pid);
+    n += sizeof pid;
+
+    while (done < len) {
+        size_t take = len - done < sizeof block ? len - done : sizeof block;
+        uint32_t i = (uint32_t)(done / sizeof block);
+        memcpy(tag, &ctr, sizeof ctr);
+        memcpy(tag + sizeof ctr, &i, 4);
+        if (hmac256(tag, sizeof tag, pool, n, NULL, 0, block) != 0) return -1;
+        memcpy(out + done, block, take);
+        done += take;
+    }
+    mbedtls_platform_zeroize(pool, sizeof pool);
+    mbedtls_platform_zeroize(block, sizeof block);
+    return 0;
+}
 
 static void crypto_init(void)
 {
     const char *pers = "cerberus";
+    unsigned char next[SEED_LEN];
+
+    mbedtls_ctr_drbg_init(&g_drbg);
+    if (mbedtls_ctr_drbg_seed(&g_drbg, entropy_cb, NULL, (const unsigned char *)pers, strlen(pers)) != 0)
+        die("no entropy source");
+    g_seeded = 1;
+    g_drbg_ready = 1;
+
+    /* The next start's seed comes out of the generator, so it says nothing about what this one makes. */
+    if (mbedtls_ctr_drbg_random(&g_drbg, next, sizeof next) == 0)
+        seed_write(next);
+    mbedtls_platform_zeroize(next, sizeof next);
+
+    /* After ours is seeded: in the release build PSA draws from it (mbedtls_psa_external_get_random
+     * below) instead of gathering from the kernel a second time. TLS 1.3 needs PSA up. */
 #if defined(MBEDTLS_PSA_CRYPTO_C)
     psa_crypto_init();
 #endif
-    mbedtls_entropy_init(&g_entropy);
-    mbedtls_ctr_drbg_init(&g_drbg);
-    if (mbedtls_ctr_drbg_seed(&g_drbg, mbedtls_entropy_func, &g_entropy,
-                              (const unsigned char *)pers, strlen(pers)) != 0)
-        die("no entropy source");
 }
+
+/* The generator, seeded on first use. */
+static mbedtls_ctr_drbg_context *drbg(void)
+{
+    if (!g_drbg_ready) crypto_init();
+    return &g_drbg;
+}
+
+#if defined(MBEDTLS_PSA_CRYPTO_EXTERNAL_RNG)
+/* The release build's mbedTLS is configured to ask the application for randomness (ci/build.sh). */
+psa_status_t mbedtls_psa_external_get_random(mbedtls_psa_external_random_context_t *context,
+                                             uint8_t *output, size_t output_size, size_t *output_length)
+{
+    size_t done = 0;
+
+    (void)context;
+    while (done < output_size) {
+        size_t take = output_size - done;
+        if (take > MBEDTLS_CTR_DRBG_MAX_REQUEST) take = MBEDTLS_CTR_DRBG_MAX_REQUEST;
+        if (mbedtls_ctr_drbg_random(drbg(), output + done, take) != 0)
+            return PSA_ERROR_INSUFFICIENT_ENTROPY;
+        done += take;
+    }
+    *output_length = output_size;
+    return PSA_SUCCESS;
+}
+#endif
 
 static void b64(const unsigned char *in, size_t n, char *out, size_t out_sz)
 {
@@ -286,7 +462,7 @@ static int x25519_pub(const unsigned char priv[32], unsigned char pub[32])
 
     rc = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_CURVE25519);
     if (rc == 0) rc = mbedtls_mpi_read_binary_le(&d, priv, 32);
-    if (rc == 0) rc = mbedtls_ecp_mul(&grp, &Q, &d, &grp.G, mbedtls_ctr_drbg_random, &g_drbg);
+    if (rc == 0) rc = mbedtls_ecp_mul(&grp, &Q, &d, &grp.G, mbedtls_ctr_drbg_random, drbg());
     /* For a Montgomery curve this writes X little-endian in 32 bytes — exactly WireGuard's
      * encoding. Going through the public API keeps us off mbedTLS 3.x private struct fields. */
     if (rc == 0) rc = mbedtls_ecp_point_write_binary(&grp, &Q, MBEDTLS_ECP_PF_UNCOMPRESSED,
@@ -319,7 +495,7 @@ static int x25519_shared(const unsigned char priv[32], const unsigned char peer[
     rc = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_CURVE25519);
     if (rc == 0) rc = mbedtls_mpi_read_binary_le(&d, priv, 32);
     if (rc == 0) rc = mbedtls_ecp_point_read_binary(&grp, &P, peer, 32);
-    if (rc == 0) rc = mbedtls_ecp_mul(&grp, &R, &d, &P, mbedtls_ctr_drbg_random, &g_drbg);
+    if (rc == 0) rc = mbedtls_ecp_mul(&grp, &R, &d, &P, mbedtls_ctr_drbg_random, drbg());
     if (rc == 0) rc = mbedtls_ecp_point_write_binary(&grp, &R, MBEDTLS_ECP_PF_UNCOMPRESSED,
                                                      &olen, out, 32);
     if (rc == 0 && olen != 32) rc = -1;
@@ -363,7 +539,7 @@ static void claim_code_new(char out[13])
     static const char alphabet[] = "23456789ABCDEFGHJKMNPQRSTVWXYZ";
     unsigned char r[12];
     int i;
-    if (mbedtls_ctr_drbg_random(&g_drbg, r, sizeof r) != 0)
+    if (mbedtls_ctr_drbg_random(drbg(), r, sizeof r) != 0)
         die("rng failed");
     for (i = 0; i < 12; i++)
         out[i] = alphabet[r[i] % (sizeof alphabet - 1)];
@@ -836,6 +1012,7 @@ static long http_do(const struct http_req *rq, unsigned char *resp, size_t resp_
     }
 
     if (c.tls) {
+        mbedtls_ctr_drbg_context *rng = drbg();   /* before anything TLS: PSA has to be up */
         mbedtls_ssl_init(&c.ssl);
         mbedtls_ssl_config_init(&c.conf);
         mbedtls_x509_crt_init(&c.ca);
@@ -863,7 +1040,7 @@ static long http_do(const struct http_req *rq, unsigned char *resp, size_t resp_
             mbedtls_ssl_conf_ca_chain(&c.conf, &c.ca, NULL);
         }
 
-        mbedtls_ssl_conf_rng(&c.conf, mbedtls_ctr_drbg_random, &g_drbg);
+        mbedtls_ssl_conf_rng(&c.conf, mbedtls_ctr_drbg_random, rng);
         if (mbedtls_ssl_setup(&c.ssl, &c.conf) != 0) die("ssl setup failed");
         if (mbedtls_ssl_set_hostname(&c.ssl, host) != 0) die("ssl SNI failed");
         mbedtls_ssl_set_bio(&c.ssl, &c.net, mbedtls_net_send, mbedtls_net_recv, NULL);
@@ -1020,7 +1197,7 @@ static void device_key(char priv_b64[64], char pub_b64[64])
         note("migrated the device key from %s into the store — it now survives a firmware update",
              g_cfg.keyfile);
     } else {
-        if (mbedtls_ctr_drbg_random(&g_drbg, priv, sizeof priv) != 0) die("rng failed");
+        if (mbedtls_ctr_drbg_random(drbg(), priv, sizeof priv) != 0) die("rng failed");
         wg_clamp(priv);
         b64(priv, sizeof priv, priv_b64, 64);
         store_set("cerberus_device_key", priv_b64);
@@ -1528,7 +1705,7 @@ static void episode_start(time_t now)
     }
 
     memset(&g_ep, 0, sizeof g_ep);
-    if (mbedtls_ctr_drbg_random(&g_drbg, r, sizeof r) != 0) return;
+    if (mbedtls_ctr_drbg_random(drbg(), r, sizeof r) != 0) return;
     g_ep.id[0] = 'm';
     for (i = 0; i < 12; i++)
         sprintf(g_ep.id + 1 + i * 2, "%02x", r[i]);
@@ -2095,6 +2272,7 @@ static int cmd_clean(void)
         store_unset_both(suffixes[i]);
     if (!store_is_uboot())
         unlink(store_file());
+    unlink(g_cfg.seed);
 
     note("cleaned: %s and %s are gone, the stored material with them", INIT_SCRIPT, self);
 
@@ -2145,6 +2323,9 @@ static void usage(void)
         "  CERBERUS_MOTION_HOOK        the script majestic runs on motion  [/usr/sbin/motion.sh]\n"
         "  CERBERUS_MOTION_QUIET       seconds without motion that end an episode  [10]\n"
         "  CERBERUS_PIDFILE            where the hook finds the agent  [/var/run/cerberus.pid]\n"
+        "  CERBERUS_SEED               randomness kept between starts  [/etc/cerberus/seed]\n"
+        "  CERBERUS_RANDOM_DEV         the kernel's random device  [/dev/urandom]\n"
+        "  CERBERUS_GETRANDOM=0        do not ask getrandom(2) first  [1]\n"
         "  CERBERUS_DRY_RUN=1          print ip/wg commands instead of running them\n",
         stderr);
 }
@@ -2159,7 +2340,6 @@ int main(int argc, char **argv)
     if (!strcmp(cmd, "-h") || !strcmp(cmd, "--help")) { usage(); return 0; }
 
     cfg_load();
-    crypto_init();
 
     /* Before anything reads the store: `clean` removes both spellings itself. */
     if (strcmp(cmd, "clean") != 0)

@@ -143,6 +143,7 @@ export CERBERUS_HOSTNAME=cerberus-test
 export CERBERUS_IFACE=cbr0
 export CERBERUS_DRY_RUN=1
 export CERBERUS_PING_INTERVAL=0
+export CERBERUS_SEED=$T/seed
 
 # ------------------------------------------------------------------------- identity
 section "device identity"
@@ -163,6 +164,24 @@ check "unchanged" "$(sed -n 2p legacy.keys)" "$(wg pubkey <legacy.key)"
 printf 'cerberus_device_key=not-a-key\n' >broken.env
 CERBERUS_STORE=file:$T/broken.env $A keygen >/dev/null 2>broken.log
 check "a corrupt stored key is refused" "$(yes_if grep -q 'not a base64 WireGuard key' broken.log)" "yes"
+
+# ------------------------------------------------------------------------ randomness
+# A camera whose kernel held every start for minutes while mbedTLS gathered entropy. Its stand-in is
+# a FIFO nobody writes to: opened non-blocking it reads empty at once, opened the ordinary way it
+# waits forever. getrandom(2) is switched off so the kernel's real pool cannot step in.
+section "randomness: a start never waits on the kernel"
+mkfifo $T/dry-random
+dry() { env CERBERUS_GETRANDOM=0 CERBERUS_RANDOM_DEV=$T/dry-random timeout "$@"; }
+
+check "a start keeps a seed for the next one" "$(stat -c %a $T/seed 2>/dev/null)" "600"
+check "32 bytes of it" "$(wc -c <$T/seed | tr -d ' ')" "32"
+check "status needs no randomness at all" "$(dry 5 $A status >/dev/null 2>&1; echo $?)" "0"
+SEED_BEFORE=$(od -An -tx1 $T/seed | tr -d ' \n')
+check "with a seed and a dry kernel: no wait" "$(dry 10 $A keygen 2>/dev/null | sed -n 2p)" "$PUB"
+check "and the seed is replaced" "$([ "$(od -An -tx1 $T/seed | tr -d ' \n')" != "$SEED_BEFORE" ] && echo yes || echo no)" "yes"
+CERBERUS_SEED=$T/no-seed dry 3 $A keygen >/dev/null 2>dry.log
+check "no seed, dry kernel: waits rather than invent any" "$(yes_if grep -q "waiting for the kernel's randomness" dry.log)" "yes"
+check "and gives nothing out meanwhile" "$(yes_if test -e $T/no-seed)" "no"
 
 # ------------------------------------------------------------------------------- TLS
 section "TLS (mbedTLS $MBEDTLS_VERSION)"
