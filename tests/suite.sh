@@ -120,7 +120,7 @@ TOKEN=tok_cerberus_test
 
 python3 /src/tests/fake_coordinator.py --port 8443 --cert srv.crt --key srv.key \
 	--token "$TOKEN" --token-max-uses 2 --overlay-ip $OVERLAY --network-subnet $SUBNET --hub-overlay-ip $HUB_IP \
-	--hub-endpoint $HUB_EP --hub-public-key "$HUB_PUB" >coordinator.log 2>&1 &
+	--hub-endpoint $HUB_EP --hub-public-key "$HUB_PUB" --majestic-port 8081 >coordinator.log 2>&1 &
 COORD=$!
 trap 'kill $COORD 2>/dev/null' EXIT
 
@@ -456,6 +456,54 @@ env PATH="$T/fw:$PATH" FAKE_UBOOT=$INST sh /src/uninstall.sh >uninst.log 2>&1
 check "uninstall.sh removes it" "$(yes_if test -e /usr/sbin/cerberus)$(yes_if test -e /etc/init.d/S99cerberus)" "nono"
 check "and every key it wrote" "$(grep -c -E '^(cerberus|streq)_' $INST)" "0"
 
+# ------------------------------------------------------------------ motion
+section "motion events"
+HOOK=$T/hooks/motion.sh
+SNAP=http://root:12345@127.0.0.1:8081/image.jpg
+mkdir -p $T/hooks
+printf '#!/bin/sh\necho "theirs $*" >>%s/theirs.log\n' $T >$HOOK && chmod +x $HOOK
+M="CERBERUS_MOTION_HOOK=$HOOK CERBERUS_PIDFILE=$T/cerberus.pid CERBERUS_SNAPSHOT_URL=$SNAP CERBERUS_MOTION_QUIET=2"
+
+check "snapshot: majestic's frame, with its password, de-chunked" \
+	"$(env $M $A snapshot 2>/dev/null | sed -n 's/^snapshot: \([0-9]*\) bytes.*/\1/p')" "10246"
+check "without the password: refused, and says how to fix it" \
+	"$(CERBERUS_SNAPSHOT_URL=http://127.0.0.1:8081/image.jpg $A snapshot 2>&1 | grep -c 'cerberus_snapshot_url')" "1"
+
+cp enrolled.env agent.env
+ctl frames '{"frames":2}'
+( sleep 3; sh $HOOK 1 2 3; sleep 1; sh $HOOK; ) &
+runfor 12 motion.log $M
+check "someone else's hook is kept aside" "$(yes_if test -x $HOOK.orig)" "yes"
+check "and still called, with its arguments" "$(yes_if grep -q 'theirs 1 2 3' theirs.log)" "yes"
+check "the coordinator's eventKey is taken" "$(yes_if grep -q 'motion events: the coordinator takes them' motion.log)" "yes"
+check "one episode for several hook calls" \
+	"$(q "print(sum(1 for r in R if r['path'].endswith('/events') and r['body'].get('phase') == 'started'))")" "1"
+check "signed by the device key" \
+	"$(q "print(all(r['verified'] for r in R if r['path'].endswith('/events')))")" "True"
+check "frames follow, as many as asked" \
+	"$(q "print(sum(1 for r in R if '/frames/' in r['path']))")" "2"
+check "each a signed JPEG" \
+	"$(q "print(all(r['verified'] and r['jpeg'] and r['contentType'] == 'image/jpeg' for r in R if '/frames/' in r['path']))")" "True"
+check "and the episode ends on its own" \
+	"$(q "print(any(r['path'].endswith('/events') and r['body'].get('phase') == 'ended' for r in R))")" "True"
+
+ctl frames '{"frames":0}'
+B0=$(q "print(sum(1 for r in R if '/frames/' in r['path']))")
+( sleep 3; env CERBERUS_PIDFILE=$T/cerberus.pid $A motion >/dev/null; ) &
+runfor 8 motion2.log $M
+check "cerberus motion: the hook's signal, by hand" \
+	"$(q "print(sum(1 for r in R if r['path'].endswith('/events') and r['body'].get('phase') == 'started'))")" "2"
+check "no frames when the cloud asks for none" "$(q "print(sum(1 for r in R if '/frames/' in r['path']))")" "$B0"
+# A pid outlives its process: whatever holds it now must not get a SIGUSR1, which kills by default.
+sleep 30 &
+STRANGER=$!
+sed "s#$T/cerberus.pid#$T/stale.pid#" $HOOK >$T/hooks/stale.sh
+echo $STRANGER >$T/stale.pid
+sh $T/hooks/stale.sh
+sleep 1
+check "a stale pid is not signalled" "$(yes_if kill -0 $STRANGER)" "yes"
+kill $STRANGER 2>/dev/null
+
 # ------------------------------------------------------------------ revocation
 section "revocation and removal"
 cp enrolled.env agent.env
@@ -478,7 +526,8 @@ check "with the device key kept" "$(ub $OLD cerberus_device_key)" "$PRIV"
 mkdir -p /etc/init.d $T/victim
 cp $A $T/victim/cerberus && touch /etc/init.d/S99cerberus
 cp enrolled.env clean.env
-CERBERUS_STORE=file:$T/clean.env $T/victim/cerberus clean >clean.log 2>&1
+CERBERUS_STORE=file:$T/clean.env CERBERUS_MOTION_HOOK=$HOOK $T/victim/cerberus clean >clean.log 2>&1
+check "clean: their motion hook is back" "$(yes_if grep -q theirs $HOOK)$(yes_if test -e $HOOK.orig)" "yesno"
 check "clean: removes the init script" "$(yes_if test -e /etc/init.d/S99cerberus)" "no"
 check "the stored material" "$(yes_if test -e $T/clean.env)" "no"
 sleep 4

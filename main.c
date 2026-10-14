@@ -14,6 +14,10 @@
  *      cannot hold a SignalR connection (the coordinator's "thin node" REST twins) — and applies the
  *      NodeDirective that comes back: rotated join material (the hub moved or re-keyed) and one-shot
  *      commands (Restart / Reboot). That answer is the only back-channel a thin node has.
+ *   6. tells the cloud about motion: majestic runs a hook, the hook wakes us, and we post a signed
+ *      episode (started / ended) plus, while it lasts and only if the owner switched detection on,
+ *      a frame a second from majestic's own /image.jpg. What is in the frame — a person, a car — is
+ *      decided by the cloud's object detector; the camera only says "look now".
  *
  * It is deliberately NOT the .NET agent: no SignalR, no map polling, no go2rtc republishing. A camera
  * that is itself on the overlay needs none of that — the relay pulls rtsp://{overlayIp}:554/stream0
@@ -44,6 +48,7 @@
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/ecp.h>
 #include <mbedtls/entropy.h>
+#include <mbedtls/md.h>
 #include <mbedtls/net_sockets.h>
 #include <mbedtls/sha256.h>
 #include <mbedtls/ssl.h>
@@ -63,7 +68,7 @@
 
 /* Release builds pass the tag in (`make VERSION=...`); a plain `make` reports the source version. */
 #ifndef CERBERUS_VERSION
-#define CERBERUS_VERSION "0.1.0"
+#define CERBERUS_VERSION "0.2.0"
 #endif
 
 /* Where the errors are decoded. Printed after every fatal one: the reader is on a camera
@@ -140,6 +145,13 @@ struct cfg {
     int ping_fails;             /* consecutive failed probes before the interface is rebuilt */
     int retry_min;              /* first pause before a failed enrolment is retried */
     int retry_max;              /* ceiling that pause backs off to */
+    int events;                 /* report motion episodes; 0 disables the hook and the events */
+    const char *motion_hook;    /* the script majestic runs on motion */
+    const char *pidfile;        /* where the hook finds us */
+    const char *snapshot_url;   /* majestic's JPEG, user:pass@ allowed */
+    int snapshot_max;           /* largest frame we accept from majestic, bytes */
+    int motion_quiet;           /* seconds without motion that end an episode */
+    int motion_max;             /* an episode is cut after this many seconds, whatever happens */
 };
 
 static struct cfg g_cfg;
@@ -197,6 +209,20 @@ static void cfg_load(void)
     g_cfg.retry_max = atoi(cfg_env("RETRY_MAX", "300"));
     if (g_cfg.retry_min < 1) g_cfg.retry_min = 1;
     if (g_cfg.retry_max < g_cfg.retry_min) g_cfg.retry_max = g_cfg.retry_min;
+
+    /* Motion. The frame is majestic's: taken on the camera at the moment of motion, so the cloud
+     * needs neither the stream nor the RTSP password — and gets it without the seconds a relay
+     * spends bringing a stream up. 640 px wide is plenty for a person at the gate. */
+    g_cfg.events = atoi(cfg_env("EVENTS", "1"));
+    g_cfg.motion_hook = cfg_env("MOTION_HOOK", "/usr/sbin/motion.sh");
+    g_cfg.pidfile = cfg_env("PIDFILE", "/var/run/cerberus.pid");
+    g_cfg.snapshot_url = cfg_env("SNAPSHOT_URL", "http://127.0.0.1/image.jpg?width=640&height=360");
+    g_cfg.snapshot_max = atoi(cfg_env("SNAPSHOT_MAX", "524288"));
+    g_cfg.motion_quiet = atoi(cfg_env("MOTION_QUIET", "10"));
+    g_cfg.motion_max = atoi(cfg_env("MOTION_MAX", "600"));
+    if (g_cfg.snapshot_max < 16384) g_cfg.snapshot_max = 16384;
+    if (g_cfg.motion_quiet < 1) g_cfg.motion_quiet = 1;
+    if (g_cfg.motion_max < g_cfg.motion_quiet) g_cfg.motion_max = g_cfg.motion_quiet;
 }
 
 /* ------------------------------------------------------------------ crypto */
@@ -270,6 +296,56 @@ static int x25519_pub(const unsigned char priv[32], unsigned char pub[32])
     mbedtls_mpi_free(&d);
     mbedtls_ecp_point_free(&Q);
     mbedtls_ecp_group_free(&grp);
+    return rc;
+}
+
+/*
+ * X25519(priv, peer): the shared secret, little-endian, as RFC 7748 and the coordinator compute it.
+ * Same scalar multiplication as x25519_pub, with the peer's point in place of the base point.
+ */
+static int x25519_shared(const unsigned char priv[32], const unsigned char peer[32], unsigned char out[32])
+{
+    mbedtls_ecp_group grp;
+    mbedtls_ecp_point P, R;
+    mbedtls_mpi d;
+    size_t olen = 0;
+    int rc;
+
+    mbedtls_ecp_group_init(&grp);
+    mbedtls_ecp_point_init(&P);
+    mbedtls_ecp_point_init(&R);
+    mbedtls_mpi_init(&d);
+
+    rc = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_CURVE25519);
+    if (rc == 0) rc = mbedtls_mpi_read_binary_le(&d, priv, 32);
+    if (rc == 0) rc = mbedtls_ecp_point_read_binary(&grp, &P, peer, 32);
+    if (rc == 0) rc = mbedtls_ecp_mul(&grp, &R, &d, &P, mbedtls_ctr_drbg_random, &g_drbg);
+    if (rc == 0) rc = mbedtls_ecp_point_write_binary(&grp, &R, MBEDTLS_ECP_PF_UNCOMPRESSED,
+                                                     &olen, out, 32);
+    if (rc == 0 && olen != 32) rc = -1;
+
+    mbedtls_mpi_free(&d);
+    mbedtls_ecp_point_free(&R);
+    mbedtls_ecp_point_free(&P);
+    mbedtls_ecp_group_free(&grp);
+    return rc;
+}
+
+/* HMAC-SHA256 over two parts, either of which may be empty. The md module is in every TLS build. */
+static int hmac256(const unsigned char *key, size_t key_len,
+                   const unsigned char *a, size_t a_len,
+                   const unsigned char *b, size_t b_len, unsigned char out[32])
+{
+    mbedtls_md_context_t ctx;
+    int rc;
+
+    mbedtls_md_init(&ctx);
+    rc = mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
+    if (rc == 0) rc = mbedtls_md_hmac_starts(&ctx, key, key_len);
+    if (rc == 0 && a_len) rc = mbedtls_md_hmac_update(&ctx, a, a_len);
+    if (rc == 0 && b_len) rc = mbedtls_md_hmac_update(&ctx, b, b_len);
+    if (rc == 0) rc = mbedtls_md_hmac_finish(&ctx, out);
+    mbedtls_md_free(&ctx);
     return rc;
 }
 
@@ -651,11 +727,16 @@ static void conn_close(struct conn *c)
     mbedtls_net_free(&c->net);
 }
 
-/* https://host[:port]/path — the only URL shape the coordinator is ever configured with. */
+/*
+ * scheme://[user:pass@]host[:port]/path. The coordinator is https; majestic on the camera itself is
+ * plain http on loopback, and may want a password — which then rides in the URL, the one place
+ * CERBERUS_SNAPSHOT_URL has to put it. `auth` gets "user:pass" base64'd, or stays empty.
+ */
 static int url_split(const char *url, int *tls, char *host, size_t host_sz,
-                     char *port, size_t port_sz, char *path, size_t path_sz)
+                     char *port, size_t port_sz, char *path, size_t path_sz,
+                     char *auth, size_t auth_sz)
 {
-    const char *p, *slash;
+    const char *p, *slash, *at;
     char *colon;
 
     if (!strncmp(url, "https://", 8)) { *tls = 1; p = url + 8; snprintf(port, port_sz, "443"); }
@@ -664,6 +745,13 @@ static int url_split(const char *url, int *tls, char *host, size_t host_sz,
 
     slash = strchr(p, '/');
     snprintf(path, path_sz, "%s", slash ? slash : "/");
+
+    auth[0] = 0;
+    at = memchr(p, '@', slash ? (size_t)(slash - p) : strlen(p));
+    if (at) {
+        b64((const unsigned char *)p, (size_t)(at - p), auth, auth_sz);
+        p = at + 1;
+    }
     snprintf(host, host_sz, "%.*s", slash ? (int)(slash - p) : (int)strlen(p), p);
 
     colon = strrchr(host, ':');
@@ -674,23 +762,72 @@ static int url_split(const char *url, int *tls, char *host, size_t host_sz,
     return 0;
 }
 
-/*
- * One request, one connection, `Connection: close` — so the body is simply "everything until EOF"
- * and neither Content-Length nor chunked framing has to be parsed. The agent makes at most one HTTP
- * call per boot; keep-alive would buy nothing and cost a de-chunker.
- */
-static int http_post_json(const char *url, const char *body, char *resp, size_t resp_sz, int *status)
+/* Case-insensitive search inside the response head only — never into a JPEG body. */
+static const char *head_find(const char *head, size_t head_len, const char *needle)
 {
+    size_t n = strlen(needle), i, j;
+    for (i = 0; i + n <= head_len; i++) {
+        for (j = 0; j < n; j++) {
+            char a = head[i + j], b = needle[j];
+            if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+            if (a != b) break;
+        }
+        if (j == n) return head + i;
+    }
+    return NULL;
+}
+
+/* Undoes Transfer-Encoding: chunked in place. Returns the payload length, or -1 if malformed. */
+static long dechunk(unsigned char *buf, size_t len)
+{
+    size_t in = 0, out = 0;
+    while (in < len) {
+        char *end;
+        unsigned long size = strtoul((const char *)buf + in, &end, 16);
+        size_t hdr = (size_t)((unsigned char *)end - buf);
+        while (hdr + 1 < len && !(buf[hdr] == '\r' && buf[hdr + 1] == '\n')) hdr++;   /* chunk extensions */
+        if (hdr + 1 >= len) return -1;
+        in = hdr + 2;
+        if (size == 0) return (long)out;
+        if (in + size > len) return -1;
+        memmove(buf + out, buf + in, size);
+        out += size;
+        in += size + 2;   /* the CRLF after the chunk */
+    }
+    return -1;
+}
+
+struct http_req {
+    const char *method;
+    const char *url;
+    const char *ctype;           /* NULL when there is no body */
+    const unsigned char *body;
+    size_t body_len;
+    const char *headers;         /* extra header lines, each ending in \r\n; may be NULL */
+};
+
+/*
+ * One request, one connection, `Connection: close` — so the body is "everything until EOF" and
+ * keep-alive bookkeeping is not needed. Binary-safe: the answer may be a JPEG. Chunked answers are
+ * de-chunked (majestic's are not, but an HTTP server is allowed to). Returns the body length,
+ * NUL-terminated in `resp`, with the status in *status; -1 on a transport failure, -2 when the
+ * answer does not fit in resp_sz.
+ */
+static long http_do(const struct http_req *rq, unsigned char *resp, size_t resp_sz, int *status)
+{
+    static int tls_said;
     struct conn c;
-    char host[256], port[16], path[512], head[1024];
+    char host[256], port[16], path[512], auth[192], head[1536];
     unsigned char buf[4096];
-    char *hdr_end;
-    size_t total = 0;
-    int rc, n;
+    unsigned char *hdr_end = NULL;
+    size_t total = 0, i, head_len;
+    long body_len;
+    int rc, n, overflow = 0, chunked;
 
     memset(&c, 0, sizeof c);
-    if (url_split(url, &c.tls, host, sizeof host, port, sizeof port, path, sizeof path) != 0)
-        die("unsupported URL: %s", url);
+    if (url_split(rq->url, &c.tls, host, sizeof host, port, sizeof port, path, sizeof path,
+                  auth, sizeof auth) != 0)
+        die("unsupported URL: %s", rq->url);
 
     mbedtls_net_init(&c.net);
     if ((rc = mbedtls_net_connect(&c.net, host, port, MBEDTLS_NET_PROTO_TCP)) != 0) {
@@ -711,7 +848,7 @@ static int http_post_json(const char *url, const char *body, char *resp, size_t 
         if (g_cfg.insecure) {
             /* Dev only. Loud, because an enrollment token in the clear is a device someone else
              * can enroll. */
-            warn_("TLS verification disabled (CERBERUS_INSECURE=1)");
+            if (!tls_said) warn_("TLS verification disabled (CERBERUS_INSECURE=1)");
             mbedtls_ssl_conf_authmode(&c.conf, MBEDTLS_SSL_VERIFY_NONE);
         } else {
             struct stat st;
@@ -738,44 +875,81 @@ static int http_post_json(const char *url, const char *body, char *resp, size_t 
             conn_close(&c);
             return -1;
         }
-        note("TLS ok: %s, %s", mbedtls_ssl_get_version(&c.ssl), mbedtls_ssl_get_ciphersuite(&c.ssl));
+        /* Once per process: with motion frames going out every second, a line per request would
+         * be most of the log. */
+        if (!tls_said++)
+            note("TLS ok: %s, %s", mbedtls_ssl_get_version(&c.ssl), mbedtls_ssl_get_ciphersuite(&c.ssl));
     }
 
-    snprintf(head, sizeof head,
-             "POST %s HTTP/1.1\r\n"
-             "Host: %s\r\n"
-             "User-Agent: cerberus/" CERBERUS_VERSION "\r\n"
-             "Content-Type: application/json\r\n"
-             "Content-Length: %u\r\n"
-             "Connection: close\r\n\r\n",
-             path, host, (unsigned)strlen(body));
+    n = snprintf(head, sizeof head,
+                 "%s %s HTTP/1.1\r\n"
+                 "Host: %s\r\n"
+                 "User-Agent: cerberus/" CERBERUS_VERSION "\r\n"
+                 "%s%s%s"
+                 "%s",
+                 rq->method, path, host,
+                 auth[0] ? "Authorization: Basic " : "", auth, auth[0] ? "\r\n" : "",
+                 rq->headers ? rq->headers : "");
+    if (rq->ctype && n > 0 && (size_t)n < sizeof head)
+        n += snprintf(head + n, sizeof head - (size_t)n, "Content-Type: %s\r\nContent-Length: %u\r\n",
+                      rq->ctype, (unsigned)rq->body_len);
+    if (n > 0 && (size_t)n < sizeof head)
+        n += snprintf(head + n, sizeof head - (size_t)n, "Connection: close\r\n\r\n");
+    if (n <= 0 || (size_t)n >= sizeof head)
+        die("request head too long for %s", rq->url);
 
-    if (conn_send(&c, head, strlen(head)) != 0 || conn_send(&c, body, strlen(body)) != 0) {
+    if (conn_send(&c, head, (size_t)n) != 0 ||
+        (rq->body_len && conn_send(&c, (const char *)rq->body, rq->body_len) != 0)) {
         warn_("sending the request failed");
         conn_close(&c);
         return -1;
     }
 
-    while (total + 1 < resp_sz) {
+    for (;;) {
         n = conn_recv(&c, buf, sizeof buf);
-        if (n == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY || n == 0) break;
-        if (n < 0) break;
-        if (total + (size_t)n + 1 > resp_sz) n = (int)(resp_sz - total - 1);
+        if (n == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY || n <= 0) break;
+        if (total + (size_t)n + 1 > resp_sz) { overflow = 1; break; }
         memcpy(resp + total, buf, (size_t)n);
         total += (size_t)n;
     }
-    resp[total] = 0;
     conn_close(&c);
+    resp[total] = 0;
 
-    if (total == 0 || strncmp(resp, "HTTP/1.", 7) != 0) {
-        warn_("no HTTP response");
+    if (total < 12 || strncmp((const char *)resp, "HTTP/1.", 7) != 0) {
+        warn_("no HTTP response from %s", host);
         return -1;
     }
-    *status = atoi(resp + 9);
+    *status = atoi((const char *)resp + 9);
 
-    hdr_end = strstr(resp, "\r\n\r\n");
-    if (hdr_end) memmove(resp, hdr_end + 4, strlen(hdr_end + 4) + 1);
-    return 0;
+    for (i = 0; i + 3 < total; i++)
+        if (resp[i] == '\r' && resp[i + 1] == '\n' && resp[i + 2] == '\r' && resp[i + 3] == '\n') {
+            hdr_end = resp + i;
+            break;
+        }
+    if (!hdr_end) { resp[0] = 0; return overflow ? -2 : 0; }
+
+    /* Look at the head before the body is moved over it. */
+    head_len = (size_t)(hdr_end - resp);
+    chunked = head_find((const char *)resp, head_len, "transfer-encoding: chunked") != NULL;
+    body_len = (long)(total - head_len - 4);
+    memmove(resp, hdr_end + 4, (size_t)body_len);
+    resp[body_len] = 0;
+    if (overflow)
+        return -2;   /* what fits is in resp — enough for a JSON caller, never for a frame */
+    if (chunked && (body_len = dechunk(resp, (size_t)body_len)) < 0) {
+        warn_("malformed chunked answer from %s", host);
+        return -1;
+    }
+    resp[body_len] = 0;
+    return body_len;
+}
+
+/* The coordinator's JSON calls: text in, text out. Returns 0 when an HTTP answer came back — an
+ * answer longer than resp_sz included, cut to fit, as it always was. */
+static int http_post_json(const char *url, const char *body, char *resp, size_t resp_sz, int *status)
+{
+    struct http_req rq = { "POST", url, "application/json", (const unsigned char *)body, strlen(body), NULL };
+    return http_do(&rq, (unsigned char *)resp, resp_sz, status) == -1 ? -1 : 0;
 }
 
 /* --------------------------------------------------------------- tiny JSON */
@@ -1164,6 +1338,415 @@ static int ping_ok(void)
     return rc == 0;
 }
 
+/* ------------------------------------------------------------------ events */
+
+/*
+ * Motion, end to end on the camera's side.
+ *
+ * majestic runs a hook script when it sees motion (its own detector — free, always on once enabled
+ * in its settings). Our hook does nothing but wake us with SIGUSR1: signing, TLS, retries and the
+ * coordinator's address all live here, and a second HTTP client in a shell script would be a second
+ * set of bugs. One episode is motion → quiet for CERBERUS_MOTION_QUIET seconds → over; it goes out
+ * twice, `started` at once and `ended` with its length, however many times the hook fired between.
+ *
+ * The answer to `started` says how many frames the cloud wants. Zero unless the owner switched
+ * object detection on for this camera; then a frame a second, taken by majestic itself
+ * (CERBERUS_SNAPSHOT_URL), until the cloud says it has seen enough. So the cloud gets the picture
+ * from the moment of motion, without pulling the stream and without the RTSP password.
+ *
+ * Every request is signed: the heartbeat is anonymous, an event is not — it ends up as a message
+ * with a picture in somebody's Telegram. The key is derived, not stored:
+ *   shared = X25519(device key, coordinator's eventKey from the directive)
+ *   k      = HKDF-SHA256(ikm = shared, salt = nodeId, info = "streq-events-v1")
+ *   sig    = base64(HMAC-SHA256(k, ts "\n" nodeId "\n" scope "\n" body))
+ * and lives exactly as long as the device key does.
+ */
+
+static volatile sig_atomic_t g_motion;
+static void on_motion(int sig) { (void)sig; g_motion = 1; }
+
+static char g_node[128];
+static char g_event_pub[64];
+static unsigned char g_event_k[32];
+static int g_event_ready;
+
+/* Flat JSON number field; `fallback` when absent. Same contract as json_str. */
+static long json_int(const char *json, const char *key, long fallback)
+{
+    char pat[64];
+    const char *p;
+
+    snprintf(pat, sizeof pat, "\"%s\"", key);
+    p = strstr(json, pat);
+    if (!p || !(p = strchr(p + strlen(pat), ':'))) return fallback;
+    while (*++p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') { }
+    return (*p == '-' || (*p >= '0' && *p <= '9')) ? strtol(p, NULL, 10) : fallback;
+}
+
+static int json_true(const char *json, const char *key)
+{
+    char pat[64];
+    const char *p;
+
+    snprintf(pat, sizeof pat, "\"%s\"", key);
+    p = strstr(json, pat);
+    if (!p || !(p = strchr(p + strlen(pat), ':'))) return 0;
+    while (*++p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') { }
+    return !strncmp(p, "true", 4);
+}
+
+/* The directive hands the coordinator's eventKey on every beat; the key is derived once per value. */
+static void event_key_update(const char *coord_pub_b64)
+{
+    static const char info[] = "streq-events-v1";
+    static const unsigned char one = 1;
+    unsigned char coord[48], priv[48], shared[32], prk[32];
+    char priv_b64[64], pub_b64[64];
+    size_t clen = 0, plen = 0;
+
+    if (!g_node[0] || (g_event_ready && !strcmp(coord_pub_b64, g_event_pub)))
+        return;
+    if (b64_decode(coord_pub_b64, coord, sizeof coord, &clen) != 0 || clen != 32) {
+        warn_("the coordinator's eventKey is not a 32-byte key — motion events stay off");
+        return;
+    }
+
+    device_key(priv_b64, pub_b64);
+    if (b64_decode(priv_b64, priv, sizeof priv, &plen) != 0 || plen != 32 ||
+        x25519_shared(priv, coord, shared) != 0 ||
+        /* HKDF (RFC 5869) with one output block: PRK = HMAC(salt, IKM), OKM = HMAC(PRK, info | 0x01). */
+        hmac256((const unsigned char *)g_node, strlen(g_node), shared, sizeof shared, NULL, 0, prk) != 0 ||
+        hmac256(prk, sizeof prk, (const unsigned char *)info, strlen(info), &one, 1, g_event_k) != 0) {
+        warn_("could not derive the event signing key — motion events stay off");
+        g_event_ready = 0;
+    } else {
+        snprintf(g_event_pub, sizeof g_event_pub, "%s", coord_pub_b64);
+        if (!g_event_ready) note("motion events: the coordinator takes them from this camera");
+        g_event_ready = 1;
+    }
+    memset(priv, 0, sizeof priv);
+    memset(shared, 0, sizeof shared);
+    memset(prk, 0, sizeof prk);
+    memset(priv_b64, 0, sizeof priv_b64);
+}
+
+/* POST <api><path>, signed for `scope`. Returns the HTTP status, or -1 when there was no answer. */
+static int event_post(const char *path, const char *scope, const char *ctype,
+                      const unsigned char *body, size_t len, char *resp, size_t resp_sz)
+{
+    char url[512], ts[24], signed_head[256], sig[64], hdr[256];
+    unsigned char mac[32];
+    struct http_req rq;
+    int n, status = 0;
+
+    snprintf(ts, sizeof ts, "%ld", (long)time(NULL));
+    n = snprintf(signed_head, sizeof signed_head, "%s\n%s\n%s\n", ts, g_node, scope);
+    if (n <= 0 || (size_t)n >= sizeof signed_head ||
+        hmac256(g_event_k, sizeof g_event_k, (const unsigned char *)signed_head, (size_t)n, body, len, mac) != 0)
+        return -1;
+    b64(mac, sizeof mac, sig, sizeof sig);
+    snprintf(hdr, sizeof hdr, "X-Streq-Ts: %s\r\nX-Streq-Sig: %s\r\n", ts, sig);
+    snprintf(url, sizeof url, "%s%s", g_cfg.api, path);
+
+    rq.method = "POST";
+    rq.url = url;
+    rq.ctype = ctype;
+    rq.body = body;
+    rq.body_len = len;
+    rq.headers = hdr;
+    return http_do(&rq, (unsigned char *)resp, resp_sz, &status) == -1 ? -1 : status;
+}
+
+static unsigned char *g_frame;
+
+/* One JPEG from majestic into g_frame. Returns its length, or -1. */
+static long snapshot_take(void)
+{
+    static int complaints;
+    struct http_req rq = { "GET", NULL, NULL, NULL, 0, NULL };
+    int status = 0;
+    long n;
+
+    if (!g_frame && !(g_frame = malloc((size_t)g_cfg.snapshot_max + 1)))
+        return -1;
+    rq.url = g_cfg.snapshot_url;
+    n = http_do(&rq, g_frame, (size_t)g_cfg.snapshot_max + 1, &status);
+    if (n == -1)
+        return -1;
+    if (status == 401 || status == 403) {
+        if (complaints++ < 3)
+            warn_("majestic wants a password for %s — put it in the address: "
+                  "fw_setenv cerberus_snapshot_url 'http://user:pass@127.0.0.1/image.jpg?width=640&height=360'",
+                  g_cfg.snapshot_url);
+        return -1;
+    }
+    if (n == -2) {
+        if (complaints++ < 3)
+            warn_("the snapshot is larger than %d bytes — ask majestic for a smaller one (width=640)", g_cfg.snapshot_max);
+        return -1;
+    }
+    if (status != 200 || n < 4 || g_frame[0] != 0xFF || g_frame[1] != 0xD8) {
+        if (complaints++ < 3)
+            warn_("the snapshot is not a JPEG (HTTP %d, %ld bytes) — check CERBERUS_SNAPSHOT_URL", status, n);
+        return -1;
+    }
+    return n;
+}
+
+static struct {
+    int active;
+    char id[32];
+    time_t started, last_motion, next_frame;
+    int frames_left, interval, seq, misses;
+} g_ep;
+
+static void episode_post(const char *phase, long duration, char *resp, size_t resp_sz, int *status)
+{
+    char path[256], body[192];
+
+    if (duration >= 0)
+        snprintf(body, sizeof body, "{\"eventId\":\"%s\",\"kind\":\"motion\",\"phase\":\"%s\",\"durationSec\":%ld}",
+                 g_ep.id, phase, duration);
+    else
+        snprintf(body, sizeof body, "{\"eventId\":\"%s\",\"kind\":\"motion\",\"phase\":\"%s\"}", g_ep.id, phase);
+    snprintf(path, sizeof path, "/nodes/%s/events", g_node);
+    *status = event_post(path, "event", "application/json", (const unsigned char *)body, strlen(body),
+                         resp, resp_sz);
+}
+
+static void episode_start(time_t now)
+{
+    static int said_clock, said_refused;
+    unsigned char r[12];
+    char resp[1024];
+    int status, i;
+
+    /* Signatures carry the time; a camera still at 1970 would be refused on every episode. */
+    if (now < 1600000000) {
+        if (!said_clock++) warn_("motion: the clock is not set (no NTP yet?) — events wait for it");
+        return;
+    }
+
+    memset(&g_ep, 0, sizeof g_ep);
+    if (mbedtls_ctr_drbg_random(&g_drbg, r, sizeof r) != 0) return;
+    g_ep.id[0] = 'm';
+    for (i = 0; i < 12; i++)
+        sprintf(g_ep.id + 1 + i * 2, "%02x", r[i]);
+    g_ep.active = 1;
+    g_ep.started = g_ep.last_motion = g_ep.next_frame = now;
+    g_ep.interval = 1;
+
+    episode_post("started", -1, resp, sizeof resp, &status);
+    if (status == 200) {
+        g_ep.frames_left = (int)json_int(resp, "frames", 0);
+        g_ep.interval = (int)json_int(resp, "intervalSeconds", 1);
+        if (g_ep.interval < 1) g_ep.interval = 1;
+        note("motion: episode %s%s", g_ep.id,
+             g_ep.frames_left > 0 ? ", the cloud looks for people and cars in it" : "");
+    } else if (status == 401) {
+        if (!said_refused++)
+            warn_("motion: the coordinator refused the signature — check the camera's clock");
+    } else if (status == 429) {
+        warn_("motion: too many episodes this hour — narrow majestic's motion zone or sensitivity");
+    } else {
+        warn_("motion: the event was not taken (HTTP %d)", status);
+    }
+}
+
+static void episode_frame(time_t now)
+{
+    char path[256], scope[96], resp[1024];
+    long n;
+    int status;
+
+    g_ep.next_frame = now + g_ep.interval;
+    if ((n = snapshot_take()) < 0) {
+        if (++g_ep.misses >= 3) g_ep.frames_left = 0;
+        return;
+    }
+
+    snprintf(path, sizeof path, "/nodes/%s/events/%s/frames/%d", g_node, g_ep.id, g_ep.seq);
+    snprintf(scope, sizeof scope, "frame/%s/%d", g_ep.id, g_ep.seq);
+    status = event_post(path, scope, "image/jpeg", g_frame, (size_t)n, resp, sizeof resp);
+    g_ep.seq++;
+    g_ep.frames_left--;
+    if (status != 200) {
+        warn_("motion: frame %d was not taken (HTTP %d)", g_ep.seq - 1, status);
+        g_ep.frames_left = 0;
+    } else if (!json_true(resp, "more")) {
+        g_ep.frames_left = 0;
+        if (strstr(resp, "\"labels\":[\""))
+            note("motion: the cloud has seen enough: %s", resp);
+    }
+}
+
+static void episode_end(time_t now)
+{
+    char resp[512];
+    int status;
+    long duration = (long)(g_ep.last_motion - g_ep.started);
+
+    episode_post("ended", duration, resp, sizeof resp, &status);
+    if (status != 200)
+        warn_("motion: the end of episode %s was not taken (HTTP %d)", g_ep.id, status);
+    note("motion: episode %s over after %lds, %d frame(s) sent", g_ep.id, duration, g_ep.seq);
+    g_ep.active = 0;
+    (void)now;
+}
+
+/* One step of the motion machinery; called every loop turn, which is every second in an episode. */
+static void events_tick(time_t now)
+{
+    static int said_no_key;
+
+    if (g_motion) {
+        g_motion = 0;
+        if (g_ep.active)
+            g_ep.last_motion = now;
+        else if (g_event_ready)
+            episode_start(now);
+        else if (!said_no_key++)
+            note("motion seen, but the coordinator has not handed this camera an event key (older cloud?)");
+    }
+    if (!g_ep.active)
+        return;
+    if (g_ep.frames_left > 0 && now >= g_ep.next_frame)
+        episode_frame(now);
+    if (now - g_ep.last_motion >= g_cfg.motion_quiet || now - g_ep.started >= g_cfg.motion_max)
+        episode_end(time(NULL));
+}
+
+/*
+ * The hook majestic runs. Ours only wakes the agent — and checks that the pid in the pidfile is
+ * still us before signalling it, because a pid outlives the process it named, and SIGUSR1 kills
+ * whatever does not expect it. Someone else's hook is not overwritten: it is kept next to ours as
+ * <hook>.orig and still called, with the same arguments.
+ */
+#define HOOK_MARK "CERBERUS_HOOK=1"
+
+static int file_has(const char *path, const char *needle)
+{
+    char buf[2048];
+    size_t n;
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    return strstr(buf, needle) != NULL;
+}
+
+static void motion_hook_install(void)
+{
+    char orig[320], tmp[320], body[1024];
+    struct stat st;
+    FILE *f;
+
+    snprintf(orig, sizeof orig, "%s.orig", g_cfg.motion_hook);
+    snprintf(tmp, sizeof tmp, "%s.cerberus-new", g_cfg.motion_hook);
+    snprintf(body, sizeof body,
+             "#!/bin/sh\n"
+             HOOK_MARK "\n"
+             "[ -x %s ] && %s \"$@\" &\n"
+             "p=$(cat %s 2>/dev/null)\n"
+             "[ -n \"$p\" ] && grep -q cerberus /proc/\"$p\"/cmdline 2>/dev/null && kill -USR1 \"$p\"\n"
+             "exit 0\n",
+             orig, orig, g_cfg.pidfile);
+
+    if (stat(g_cfg.motion_hook, &st) == 0) {
+        if (file_has(g_cfg.motion_hook, body))
+            return;   /* ours, current */
+        if (!file_has(g_cfg.motion_hook, HOOK_MARK)) {
+            if (stat(orig, &st) == 0) {
+                warn_("%s is not ours and %s exists already — leaving both alone; motion events are off",
+                      g_cfg.motion_hook, orig);
+                return;
+            }
+            if (rename(g_cfg.motion_hook, orig) != 0) {
+                warn_("cannot keep %s aside: %s — motion events are off", g_cfg.motion_hook, strerror(errno));
+                return;
+            }
+            note("kept the existing %s as %s; ours calls it", g_cfg.motion_hook, orig);
+        }
+    }
+
+    mkparent(g_cfg.motion_hook);
+    if (!(f = fopen(tmp, "w"))) {
+        warn_("cannot write %s: %s — motion events are off", tmp, strerror(errno));
+        return;
+    }
+    fputs(body, f);
+    fclose(f);
+    chmod(tmp, 0755);
+    if (rename(tmp, g_cfg.motion_hook) != 0) {
+        warn_("cannot install %s: %s — motion events are off", g_cfg.motion_hook, strerror(errno));
+        unlink(tmp);
+        return;
+    }
+    note("motion hook installed at %s (majestic runs it when motion detection is on)", g_cfg.motion_hook);
+}
+
+/* `clean`: our hook goes, and whatever it replaced comes back. */
+static void motion_hook_remove(void)
+{
+    char orig[320];
+    struct stat st;
+
+    if (!file_has(g_cfg.motion_hook, HOOK_MARK))
+        return;
+    snprintf(orig, sizeof orig, "%s.orig", g_cfg.motion_hook);
+    if (stat(orig, &st) == 0 ? rename(orig, g_cfg.motion_hook) : unlink(g_cfg.motion_hook))
+        warn_("cannot remove the motion hook %s: %s", g_cfg.motion_hook, strerror(errno));
+}
+
+static void pidfile_write(void)
+{
+    FILE *f;
+    mkparent(g_cfg.pidfile);
+    if ((f = fopen(g_cfg.pidfile, "w")) != NULL) {
+        fprintf(f, "%ld\n", (long)getpid());
+        fclose(f);
+    }
+}
+
+/* `cerberus motion`: what the hook does, by hand — the way to test without walking past the camera. */
+static int cmd_motion(void)
+{
+    char buf[32];
+    long pid = 0;
+    FILE *f = fopen(g_cfg.pidfile, "r");
+
+    if (f) {
+        if (fgets(buf, sizeof buf, f)) pid = atol(buf);
+        fclose(f);
+    }
+    if (pid <= 0 || kill((pid_t)pid, SIGUSR1) != 0) {
+        fprintf(stderr, "cerberus: no running agent in %s\n", g_cfg.pidfile);
+        return 1;
+    }
+    printf("motion signalled to %ld\n", pid);
+    return 0;
+}
+
+/* `cerberus snapshot`: is majestic's frame reachable as configured? Saves it for a look. */
+static int cmd_snapshot(void)
+{
+    const char *out = "/tmp/cerberus-snapshot.jpg";
+    long n = snapshot_take();
+    FILE *f;
+
+    if (n < 0) {
+        fprintf(stderr, "cerberus: no snapshot from %s\n", g_cfg.snapshot_url);
+        return 1;
+    }
+    if ((f = fopen(out, "wb")) != NULL) {
+        fwrite(g_frame, 1, (size_t)n, f);
+        fclose(f);
+    }
+    printf("snapshot: %ld bytes -> %s\n", n, out);
+    return 0;
+}
+
 /* ------------------------------------------------------------- directives */
 
 static char **g_argv;
@@ -1240,6 +1823,9 @@ static void apply_directive(const char *json)
     if (rotated && link_apply(1) != 0)
         warn_("could not apply the rotated join material; the stale-handshake path will retry");
 
+    if (g_cfg.events && json_str(json, "eventKey", fresh, sizeof fresh) && fresh[0])
+        event_key_update(fresh);
+
     if (!json_str(json, "command", command, sizeof command))
         return;
     if (!strcmp(command, "Reboot"))
@@ -1264,6 +1850,8 @@ static void catch_signals(void)
 {
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
+    /* The motion hook's wake-up. SIGUSR1 kills by default, so this is set before anything slow. */
+    signal(SIGUSR1, on_motion);
 }
 
 /*
@@ -1293,6 +1881,12 @@ static int watch(void)
         return 1;
     store_get("cerberus_node_id", node, sizeof node);
     snprintf(beat_url, sizeof beat_url, "%s/nodes/%s/heartbeat", g_cfg.api, node);
+    snprintf(g_node, sizeof g_node, "%s", node);
+
+    if (g_cfg.events) {
+        pidfile_write();
+        motion_hook_install();
+    }
 
     tick = g_cfg.watch_interval;
     if (g_cfg.heartbeat > 0 && g_cfg.heartbeat < tick) tick = g_cfg.heartbeat;
@@ -1371,8 +1965,15 @@ static int watch(void)
             next_beat = time(NULL) + g_cfg.heartbeat;
         }
 
-        if (!g_stop) sleep((unsigned)tick);
+        if (g_cfg.events)
+            events_tick(time(NULL));
+
+        /* A second at a time while an episode runs: frames go out every second, and the hook's
+         * signal cuts any sleep short anyway. */
+        if (!g_stop && !g_motion) sleep(g_ep.active ? 1u : (unsigned)tick);
     }
+    if (g_ep.active)
+        episode_end(time(NULL));
     note("stopping");
     return 0;
 }
@@ -1469,6 +2070,7 @@ static int cmd_clean(void)
         "node_id", "overlay_ip", "hub_endpoint", "hub_pubkey", "allowed_ips", "network_subnet",
         "hub_ip", "claim_code", "device_key", "api", "enrollment_token", "hostname", "kind", "iface",
         "subnet", "ca", "heartbeat", "ping_target", "ping_interval", "ping_timeout", "ping_fails",
+        "events", "snapshot_url",
         NULL
     };
     char self[256];
@@ -1485,6 +2087,7 @@ static int cmd_clean(void)
         self[n] = 0;
 
     runf("ip link del dev %s", g_cfg.iface);
+    motion_hook_remove();
     if (unlink(INIT_SCRIPT) != 0 && errno != ENOENT)
         warn_("cannot remove %s: %s", INIT_SCRIPT, strerror(errno));
 
@@ -1511,13 +2114,15 @@ static void usage(void)
     fputs(
         "cerberus " CERBERUS_VERSION " — on-camera cloud agent for OpenIPC\n"
         "\n"
-        "usage: cerberus [enroll|up|run|status|keygen|clean]\n"
+        "usage: cerberus [enroll|up|run|status|keygen|clean|motion|snapshot]\n"
         "  enroll   enroll into the coordinator and persist the join material (idempotent)\n"
         "  up       program the WireGuard interface from the stored material\n"
         "  run      enroll + up + watch the tunnel (the default; what the init script calls)\n"
         "  status   print what is stored, how old the handshake is, whether the tunnel answers\n"
         "  keygen   print the device keypair (private, public), creating it if needed\n"
         "  clean    remove the agent: interface, init script, stored material, the binary\n"
+        "  motion   tell the running agent there is motion, as majestic's hook does\n"
+        "  snapshot fetch one frame from CERBERUS_SNAPSHOT_URL into /tmp/cerberus-snapshot.jpg\n"
         "\n"
         "config (env; the old STREQ_* names are accepted too):\n"
         "  CERBERUS_API                coordinator base URL incl. /v1  [https://api.localhost/v1]\n"
@@ -1534,6 +2139,12 @@ static void usage(void)
         "  CERBERUS_PING_INTERVAL      seconds between probes; 0 disables  [60]\n"
         "  CERBERUS_PING_TIMEOUT       seconds one probe waits  [3]\n"
         "  CERBERUS_PING_FAILS         failed probes before the interface is rebuilt  [3]\n"
+        "  CERBERUS_EVENTS=0           no motion hook, no events  [1]\n"
+        "  CERBERUS_SNAPSHOT_URL       majestic's JPEG, user:pass@ allowed\n"
+        "                              [http://127.0.0.1/image.jpg?width=640&height=360]\n"
+        "  CERBERUS_MOTION_HOOK        the script majestic runs on motion  [/usr/sbin/motion.sh]\n"
+        "  CERBERUS_MOTION_QUIET       seconds without motion that end an episode  [10]\n"
+        "  CERBERUS_PIDFILE            where the hook finds the agent  [/var/run/cerberus.pid]\n"
         "  CERBERUS_DRY_RUN=1          print ip/wg commands instead of running them\n",
         stderr);
 }
@@ -1559,6 +2170,8 @@ int main(int argc, char **argv)
     if (!strcmp(cmd, "clean")) return cmd_clean();
     if (!strcmp(cmd, "enroll")) return enroll();
     if (!strcmp(cmd, "up")) return link_up();
+    if (!strcmp(cmd, "motion")) return cmd_motion();
+    if (!strcmp(cmd, "snapshot")) return cmd_snapshot();
     if (!strcmp(cmd, "run")) {
         catch_signals();
         /* Ненулевой ответ здесь бывает ровно один: попросили остановиться. Это не отказ. */

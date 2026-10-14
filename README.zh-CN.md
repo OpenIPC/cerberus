@@ -114,6 +114,8 @@ fw_setenv cerberus_enrollment_token tok_...
 | `cerberus_ping_interval` | `CERBERUS_PING_INTERVAL` | `60` | 探测间隔（秒），`0` 表示关闭 |
 | `cerberus_ping_timeout` | `CERBERUS_PING_TIMEOUT` | `3` | 单次探测等待的秒数 |
 | `cerberus_ping_fails` | `CERBERUS_PING_FAILS` | `3` | 连续多少次探测无响应后重建接口 |
+| `cerberus_events` | `CERBERUS_EVENTS` | `1` | 移动事件；`0` 表示不安装钩子、不发送事件 |
+| `cerberus_snapshot_url` | `CERBERUS_SNAPSHOT_URL` | `http://127.0.0.1/image.jpg?width=640&height=360` | majestic 的截图；需要密码时写成 `http://user:pass@127.0.0.1/…` |
 
 `cerberus_ca` 比看上去更重要：固件可能根本不带 CA 证书包，此时注册会因协调器证书校验失败而中断，
 除了重新刷写固件之外无法修复——请将其指向根证书（Let's Encrypt 使用 ISRG Root X1）。
@@ -130,6 +132,8 @@ cerberus up        # 用已保存的材料启动接口
 cerberus status    # 已保存的内容、握手时间、隧道是否有响应
 cerberus keygen    # 打印密钥对（stdout 为数据，诊断信息输出到 stderr）
 cerberus clean     # 移除代理：接口、启动脚本、已保存的材料以及二进制文件本身
+cerberus motion    # 像 majestic 的钩子一样，通知正在运行的代理“有移动”
+cerberus snapshot  # 从 CERBERUS_SNAPSHOT_URL 取一帧到 /tmp/cerberus-snapshot.jpg
 ```
 
 ### 以前的 `streq_*`

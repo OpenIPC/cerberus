@@ -25,6 +25,9 @@ export CERBERUS_PING_TARGET="$(uenv ping_target)"
 export CERBERUS_PING_INTERVAL="$(uenv ping_interval)"
 export CERBERUS_PING_TIMEOUT="$(uenv ping_timeout)"
 export CERBERUS_PING_FAILS="$(uenv ping_fails)"
+# Motion events: on by default. cerberus_snapshot_url carries majestic's password when it has one.
+export CERBERUS_EVENTS="$(uenv events)"
+export CERBERUS_SNAPSHOT_URL="$(uenv snapshot_url)"
 CERBERUS_IFACE=$(uenv iface)
 export CERBERUS_IFACE=${CERBERUS_IFACE:-wg0}
 
