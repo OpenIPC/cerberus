@@ -70,7 +70,7 @@
 
 /* Release builds pass the tag in (`make VERSION=...`); a plain `make` reports the source version. */
 #ifndef CERBERUS_VERSION
-#define CERBERUS_VERSION "0.2.1"
+#define CERBERUS_VERSION "0.2.2"
 #endif
 
 /* Where the errors are decoded. Printed after every fatal one: the reader is on a camera
@@ -1691,12 +1691,18 @@ static void episode_post(const char *phase, long duration, char *resp, size_t re
                          resp, resp_sz);
 }
 
+/* Whether the last `started` asked for frames: -1 until the cloud has said. */
+static int g_wants_frames = -1;
+
+static void episode_send(long n);
+
 static void episode_start(time_t now)
 {
     static int said_clock, said_refused;
     unsigned char r[12];
     char resp[1024];
     int status, i;
+    long first = -1;
 
     /* Signatures carry the time; a camera still at 1970 would be refused on every episode. */
     if (now < 1600000000) {
@@ -1713,13 +1719,25 @@ static void episode_start(time_t now)
     g_ep.started = g_ep.last_motion = g_ep.next_frame = now;
     g_ep.interval = 1;
 
+    /* The frame from the moment of motion, taken before the cloud is asked anything. Asking costs a
+     * TLS handshake — a second or two on a camera — and somebody who walked past is out of the
+     * picture by then. majestic hands a JPEG over in a fraction of that. Skipped only once the cloud
+     * has said it wants no frames from this camera. */
+    if (g_wants_frames != 0)
+        first = snapshot_take();
+
     episode_post("started", -1, resp, sizeof resp, &status);
     if (status == 200) {
         g_ep.frames_left = (int)json_int(resp, "frames", 0);
         g_ep.interval = (int)json_int(resp, "intervalSeconds", 1);
         if (g_ep.interval < 1) g_ep.interval = 1;
+        g_wants_frames = g_ep.frames_left > 0;
         note("motion: episode %s%s", g_ep.id,
              g_ep.frames_left > 0 ? ", the cloud looks for people and cars in it" : "");
+        if (g_ep.frames_left > 0 && first >= 0) {
+            episode_send(first);
+            g_ep.next_frame = time(NULL) + g_ep.interval;
+        }
     } else if (status == 401) {
         if (!said_refused++)
             warn_("motion: the coordinator refused the signature — check the camera's clock");
@@ -1732,15 +1750,21 @@ static void episode_start(time_t now)
 
 static void episode_frame(time_t now)
 {
-    char path[256], scope[96], resp[1024];
     long n;
-    int status;
 
     g_ep.next_frame = now + g_ep.interval;
     if ((n = snapshot_take()) < 0) {
         if (++g_ep.misses >= 3) g_ep.frames_left = 0;
         return;
     }
+    episode_send(n);
+}
+
+/* The `n` bytes in g_frame, as the episode's next frame. */
+static void episode_send(long n)
+{
+    char path[256], scope[96], resp[1024];
+    int status;
 
     snprintf(path, sizeof path, "/nodes/%s/events/%s/frames/%d", g_node, g_ep.id, g_ep.seq);
     snprintf(scope, sizeof scope, "frame/%s/%d", g_ep.id, g_ep.seq);
