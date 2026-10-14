@@ -20,13 +20,22 @@ ip link del dev "${iface:-wg0}" >/dev/null 2>&1 || true
 
 for name in node_id overlay_ip hub_endpoint hub_pubkey allowed_ips network_subnet hub_ip \
             claim_code device_key api enrollment_token hostname kind iface subnet ca heartbeat \
-            ping_target ping_interval ping_timeout ping_fails; do
+            ping_target ping_interval ping_timeout ping_fails events snapshot_url; do
     for prefix in cerberus streq; do
         if fw_printenv -n "${prefix}_$name" >/dev/null 2>&1; then
             fw_setenv "${prefix}_$name" >/dev/null 2>&1 || die 30
         fi
     done
 done
+
+hook=/usr/sbin/motion.sh
+if grep -q CERBERUS_HOOK=1 "$hook" 2>/dev/null; then
+    if [ -e "$hook.orig" ]; then
+        mv -f "$hook.orig" "$hook" || die 30
+    else
+        rm -f "$hook" || die 30
+    fi
+fi
 
 rm -f "$INIT" || die 30
 rm -f "$AGENT" || die 30

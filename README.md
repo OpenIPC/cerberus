@@ -122,6 +122,8 @@ Almost all of that is mbedTLS built with its default configuration; the agent it
 | `cerberus_ping_interval` | `CERBERUS_PING_INTERVAL` | `60` | seconds between probes; `0` disables |
 | `cerberus_ping_timeout` | `CERBERUS_PING_TIMEOUT` | `3` | seconds one probe waits |
 | `cerberus_ping_fails` | `CERBERUS_PING_FAILS` | `3` | failed probes in a row before the interface is rebuilt |
+| `cerberus_events` | `CERBERUS_EVENTS` | `1` | motion events; `0` installs no hook and sends nothing |
+| `cerberus_snapshot_url` | `CERBERUS_SNAPSHOT_URL` | `http://127.0.0.1/image.jpg?width=640&height=360` | majestic's frame; `http://user:pass@127.0.0.1/…` when it wants a password |
 
 `cerberus_ca` matters more than it looks: a firmware may carry no CA bundle at all, and then
 enrolment fails on the coordinator's certificate with no way to fix it short of a reflash — point it
@@ -131,7 +133,8 @@ Variables only the agent reads: `CERBERUS_STORE` (`auto` \| `uboot` \| `file:/pa
 `CERBERUS_STALE_AFTER` (`180`, seconds without a handshake before the peer is re-poked),
 `CERBERUS_RETRY_MIN` / `CERBERUS_RETRY_MAX` (`5` / `300`, enrolment backoff), `CERBERUS_INSECURE=1`
 (skip TLS verification, debugging only), `CERBERUS_DRY_RUN=1` (print the `ip`/`wg` commands instead
-of running them).
+of running them), `CERBERUS_MOTION_HOOK` (`/usr/sbin/motion.sh`), `CERBERUS_MOTION_QUIET` (`10`,
+seconds without motion that end an episode), `CERBERUS_PIDFILE` (`/var/run/cerberus.pid`).
 
 ```
 cerberus run       # enroll + up + watch (the default; what S99cerberus starts)
@@ -140,6 +143,8 @@ cerberus up        # bring the interface up from the stored material
 cerberus status    # what is stored, handshake age, whether the tunnel answers
 cerberus keygen    # print the keypair (stdout is data, diagnostics go to stderr)
 cerberus clean     # remove the agent: interface, init script, stored material, the binary
+cerberus motion    # tell the running agent there is motion, as majestic's hook does
+cerberus snapshot  # fetch one frame from CERBERUS_SNAPSHOT_URL into /tmp/cerberus-snapshot.jpg
 ```
 
 ### Formerly `streq_*`
@@ -213,6 +218,27 @@ never looks again, so enrolment is retried with a doubling pause for as long as 
 Video does not pass through the agent: the relay pulls `rtsp://{overlayIp}:554/stream0` straight from
 the camera through the tunnel. There is no peer-to-peer on this agent — the camera stays on the hub
 path, which is the path that always works.
+
+### Motion events
+
+majestic notices motion itself once its motion detection is switched on (web UI → Majestic →
+Motion detection), and runs `/usr/sbin/motion.sh`. cerberus installs that script — keeping one that
+was already there as `motion.sh.orig` and still calling it — and the script does nothing but wake
+the agent. The agent turns the calls into episodes (motion, then `CERBERUS_MOTION_QUIET` seconds of
+quiet) and reports each one twice, `started` and `ended`, to `POST /nodes/{id}/events`.
+
+When the owner has switched object detection on for the camera, the answer to `started` asks for
+frames: one a second from majestic's own `/image.jpg`, until the cloud says it has seen enough. The
+cloud looks for people, cars and animals in them and tells the owner — the camera only says "look
+now", from the moment it happens, without the cloud pulling the stream or knowing the RTSP password.
+
+Events are signed. The heartbeat's answer carries the coordinator's `eventKey`; the key is
+`HKDF-SHA256(X25519(device key, eventKey), salt = nodeId, info = "streq-events-v1")` and each request
+carries `X-Streq-Ts` and `X-Streq-Sig = base64(HMAC-SHA256(key, ts \n nodeId \n scope \n body))`. No new
+secret is stored on the camera: it lives exactly as long as the device key.
+
+To check it on a camera: `cerberus snapshot` (does majestic hand out a frame as configured?) and
+`cerberus motion` (an episode, as if somebody walked by).
 
 ## Building
 
