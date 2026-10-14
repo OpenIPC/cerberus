@@ -123,7 +123,8 @@ fw_setenv cerberus_enrollment_token tok_...
 仅由代理读取的变量：`CERBERUS_STORE`（`auto` \| `uboot` \| `file:/path`）、`CERBERUS_STALE_AFTER`
 （`180`，多少秒没有握手后重新设置对端）、`CERBERUS_RETRY_MIN` / `CERBERUS_RETRY_MAX`（`5` / `300`，
 注册重试的退避时间）、`CERBERUS_INSECURE=1`（跳过 TLS 校验，仅用于调试）、`CERBERUS_DRY_RUN=1`
-（只打印 `ip`/`wg` 命令而不执行）。
+（只打印 `ip`/`wg` 命令而不执行）、`CERBERUS_SEED`（`/etc/cerberus/seed`，在两次启动之间保存的随机种子，
+使启动无需等待内核）、`CERBERUS_RANDOM_DEV`（`/dev/urandom`）、`CERBERUS_GETRANDOM=0`（不先调用 getrandom(2)）。
 
 ```
 cerberus run       # enroll + up + watch（默认；S99cerberus 启动的就是它）

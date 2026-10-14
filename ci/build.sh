@@ -109,6 +109,11 @@ CROSS=${CC%gcc}
 # mbedTLS as static libraries for this toolchain: whatever a firmware carries never enters into it.
 mkdir -p /build/mbedtls /build/prefix/lib
 tar -xjf "/cache/mbedtls-$MBEDTLS_VERSION.tar.bz2" -C /build/mbedtls --strip-components=1
+# PSA takes its randomness from cerberus's own generator instead of gathering it from the kernel on
+# every start: on some cameras that read blocks for minutes ("Randomness" in main.c).
+cfg=/build/mbedtls/include/mbedtls/mbedtls_config.h
+sed -i 's|^//#define MBEDTLS_PSA_CRYPTO_EXTERNAL_RNG$|#define MBEDTLS_PSA_CRYPTO_EXTERNAL_RNG|' "$cfg"
+grep -q '^#define MBEDTLS_PSA_CRYPTO_EXTERNAL_RNG$' "$cfg"
 make -s -C /build/mbedtls/library static CC="$CC" AR="${CROSS}ar" \
 	CFLAGS="-Os -ffunction-sections -fdata-sections" >/dev/null
 cp /build/mbedtls/library/*.a /build/prefix/lib/
