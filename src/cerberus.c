@@ -2320,9 +2320,8 @@ static int cmd_keygen(void)
  * how the agent is started, where its pidfile is — and a binary from one release next to a script
  * from another is a real state on a camera (a binary updated by hand, a firmware with its own copy).
  * Written by the binary, the two cannot disagree. DAEMON is wherever this binary actually is, so an
- * agent kept on an SD card gets a script that starts that one.
- *
- * Until src/S99cerberus leaves the repository the test suite checks that this is the same text.
+ * agent kept on an SD card gets a script that starts that one. It is the only copy: neither the
+ * repository nor a release carries the script as a file of its own.
  */
 static const char g_init_head[] =
     "#!/bin/sh\n"

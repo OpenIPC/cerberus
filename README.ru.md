@@ -37,7 +37,8 @@ curl -fsSL https://github.com/OpenIPC/cerberus/releases/latest/download/install.
 ```
 
 Установщик выбирает сборку под процессор камеры, сверяет её с `SHA256SUMS` из того же релиза, ставит
-`/usr/sbin/cerberus` и `/etc/init.d/S99cerberus`, пишет адрес и токен в U-Boot env и запускает агента.
+`/usr/sbin/cerberus`, даёт ему записать `/etc/init.d/S99cerberus`, пишет адрес и токен в U-Boot env и
+запускает агента.
 Перезагрузка не нужна. Если что-то не так, он печатает короткий код — `cerberus: E13` — и страницу, где
 код расшифрован: <https://cloud.openipc.ru/docs/openipc-camera/#codes>.
 
@@ -55,8 +56,8 @@ curl -fsSL https://github.com/OpenIPC/cerberus/releases/latest/download/install.
 ```sh
 # cerberus-arm, cerberus-mipsel, ... — см. «Релизы» ниже
 curl -fsSL -o /usr/sbin/cerberus https://github.com/OpenIPC/cerberus/releases/latest/download/cerberus-arm
-curl -fsSL -o /etc/init.d/S99cerberus https://github.com/OpenIPC/cerberus/releases/latest/download/S99cerberus
-chmod +x /usr/sbin/cerberus /etc/init.d/S99cerberus
+chmod +x /usr/sbin/cerberus
+cerberus init-script                   # пишет /etc/init.d/S99cerberus, запускающий этот бинарь
 fw_setenv cerberus_api https://cloud-api.openipc.ru/v1
 fw_setenv cerberus_enrollment_token tok_...
 /etc/init.d/S99cerberus restart
@@ -79,7 +80,6 @@ fw_setenv cerberus_enrollment_token tok_...
 | `cerberus-x86_64` | виртуалки и тестовые стенды |
 | `install.sh` | установщик; с `--uninstall` снимает агента обратно |
 | `uninstall.sh` | старый адрес `install.sh --uninstall`, оставлен ради уже напечатанных команд |
-| `S99cerberus` | init-скрипт BusyBox |
 | `SHA256SUMS` | контрольные суммы всего перечисленного; установщик сверяется с ними |
 | `LICENSE.md` | лицензия |
 
@@ -249,14 +249,16 @@ P2P этот агент не делает — камера остаётся на
 
 ## Сборка
 
-Агент — это каталог `src/`: `src/cerberus.c`, его `Makefile` и init-скрипт `S99cerberus`; больше для
-сборки и установки ничего не нужно. `Makefile` в корне просто передаёт команды туда.
+Агент — это каталог `src/`: `src/cerberus.c` и его `Makefile`; больше для сборки и установки ничего
+не нужно. `Makefile` в корне просто передаёт команды туда. Init-скрипта среди файлов нет: его несёт и
+пишет сам бинарь (`cerberus init-script`), поэтому скрипт не может оказаться из другого релиза, чем
+агент, которого он запускает.
 
 ```sh
 make                                   # нативно, против системного mbedTLS (3.x или 2.28 LTS)
 make STATIC=1                          # статически
 make VERSION=1.2.0                     # версия, которую агент сообщает (по умолчанию — из src/cerberus.c)
-make install DESTDIR=/tmp/rootfs       # /usr/sbin/cerberus + /etc/init.d/S99cerberus
+make install DESTDIR=/tmp/rootfs       # /usr/sbin/cerberus + /etc/init.d/S99cerberus, записанный им
 ```
 
 Бинари релиза собирает `ci/build.sh`, которому нужен только Docker: он скачивает musl-тулчейн
@@ -267,15 +269,20 @@ make install DESTDIR=/tmp/rootfs       # /usr/sbin/cerberus + /etc/init.d/S99cer
 ```sh
 ci/build.sh                            # arm, mipsel, aarch64, x86_64 → dist/cerberus-<arch>
 ci/build.sh mipsel                     # одну из них
-ci/assemble.sh                         # + установщики, init-скрипт, SHA256SUMS → релиз в dist/
+ci/assemble.sh                         # + установщики, SHA256SUMS → релиз в dist/
 ```
 
 Внутри сборки прошивки, её собственным тулчейном, указывая на `src/`:
 
 ```sh
 make -C src CC=mipsel-openipc-linux-musl-gcc MBEDTLS=<buildroot-staging> STATIC=1
-make -C src install DESTDIR=<target-rootfs>
+make -C src install DESTDIR=<target-rootfs> RUN=<host-dir>/bin/qemu-mipsel
 ```
+
+`make install` получает init-скрипт, запуская собранный бинарь, а кросс-сборка сама этого не может:
+дайте ей user-mode эмулятор в `RUN` (`host-qemu` из Buildroot; статическому бинарю sysroot не нужен)
+или передайте `INIT_SCRIPT=no`, и пусть прошивка выполнит `cerberus init-script` на камере. Без
+одного из двух установка останавливается, а не ставит агента, которого ничто не запустит.
 
 ## Тесты
 

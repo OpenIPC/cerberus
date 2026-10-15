@@ -34,7 +34,7 @@ curl -fsSL https://github.com/OpenIPC/cerberus/releases/latest/download/install.
 ```
 
 安装脚本会根据摄像机的 CPU 选择对应的构建，使用同一发布中的 `SHA256SUMS` 进行校验，安装
-`/usr/sbin/cerberus` 和 `/etc/init.d/S99cerberus`，将地址和令牌写入 U-Boot 环境变量并启动代理，无需重启。
+`/usr/sbin/cerberus`，由它写入 `/etc/init.d/S99cerberus`，将地址和令牌写入 U-Boot 环境变量并启动代理，无需重启。
 出错时会打印一个简短的代码，例如 `cerberus: E13`，以及解释该代码的页面：
 <https://cloud.openipc.ru/docs/openipc-camera/#codes>。
 
@@ -51,8 +51,8 @@ curl -fsSL https://github.com/OpenIPC/cerberus/releases/latest/download/install.
 ```sh
 # cerberus-arm、cerberus-mipsel 等——见下文“发布”
 curl -fsSL -o /usr/sbin/cerberus https://github.com/OpenIPC/cerberus/releases/latest/download/cerberus-arm
-curl -fsSL -o /etc/init.d/S99cerberus https://github.com/OpenIPC/cerberus/releases/latest/download/S99cerberus
-chmod +x /usr/sbin/cerberus /etc/init.d/S99cerberus
+chmod +x /usr/sbin/cerberus
+cerberus init-script                   # 写入 /etc/init.d/S99cerberus，由它启动这个二进制文件
 fw_setenv cerberus_api https://cloud-api.openipc.ru/v1
 fw_setenv cerberus_enrollment_token tok_...
 /etc/init.d/S99cerberus restart
@@ -74,7 +74,6 @@ fw_setenv cerberus_enrollment_token tok_...
 | `cerberus-x86_64` | 虚拟机和测试环境 |
 | `install.sh` | 安装脚本；加 `--uninstall` 则卸载 agent |
 | `uninstall.sh` | `install.sh --uninstall` 的旧地址，为已经给出的命令保留 |
-| `S99cerberus` | BusyBox 启动脚本 |
 | `SHA256SUMS` | 以上所有文件的校验和，安装脚本据此校验 |
 | `LICENSE.md` | 许可证 |
 
@@ -207,14 +206,15 @@ cerberus init-script [PATH|-]  # 写入启动本二进制文件的启动脚本 [
 
 ## 构建
 
-代理就是 `src/` 目录：`src/cerberus.c`、它的 `Makefile` 和启动脚本 `S99cerberus`——构建和安装不需要其他任何文件。
+代理就是 `src/` 目录：`src/cerberus.c` 和它的 `Makefile`——构建和安装不需要其他任何文件。文件中没有启动脚本：
+它由二进制文件自带并写入（`cerberus init-script`），因此启动脚本不可能与它所启动的代理来自不同的发布。
 顶层的 `Makefile` 只是把命令转交给它。
 
 ```sh
 make                                   # 本机构建，链接系统的 mbedTLS（3.x 或 2.28 LTS）
 make STATIC=1                          # 静态构建
 make VERSION=1.2.0                     # 代理上报的版本（默认取自 src/cerberus.c）
-make install DESTDIR=/tmp/rootfs       # /usr/sbin/cerberus + /etc/init.d/S99cerberus
+make install DESTDIR=/tmp/rootfs       # /usr/sbin/cerberus + 由它写入的 /etc/init.d/S99cerberus
 ```
 
 发布用的二进制文件由 `ci/build.sh` 构建，只需要 Docker：它会下载 [Bootlin](https://toolchains.bootlin.com)
@@ -224,15 +224,19 @@ make install DESTDIR=/tmp/rootfs       # /usr/sbin/cerberus + /etc/init.d/S99cer
 ```sh
 ci/build.sh                            # arm、mipsel、aarch64、x86_64 → dist/cerberus-<arch>
 ci/build.sh mipsel                     # 其中之一
-ci/assemble.sh                         # + 安装脚本、启动脚本、SHA256SUMS → dist/ 中的完整发布
+ci/assemble.sh                         # + 安装脚本、SHA256SUMS → dist/ 中的完整发布
 ```
 
 在固件构建环境中，使用固件自带的工具链，指向 `src/`：
 
 ```sh
 make -C src CC=mipsel-openipc-linux-musl-gcc MBEDTLS=<buildroot-staging> STATIC=1
-make -C src install DESTDIR=<target-rootfs>
+make -C src install DESTDIR=<target-rootfs> RUN=<host-dir>/bin/qemu-mipsel
 ```
+
+`make install` 通过运行刚构建的二进制文件来获得启动脚本，而交叉构建自身做不到这一点：请在 `RUN` 中指定用户态模拟器
+（Buildroot 的 `host-qemu`；静态二进制文件不需要 sysroot），或者传入 `INIT_SCRIPT=no`，由固件在摄像机上运行
+`cerberus init-script`。两者都没有时，安装会停止，而不是装上一个没有任何东西去启动的代理。
 
 ## 测试
 

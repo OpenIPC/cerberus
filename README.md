@@ -38,9 +38,9 @@ curl -fsSL https://github.com/OpenIPC/cerberus/releases/latest/download/install.
 ```
 
 The installer picks the build for the camera's CPU, checks it against `SHA256SUMS` from the same
-release, installs `/usr/sbin/cerberus` and `/etc/init.d/S99cerberus`, writes the address and the token
-into the U-Boot environment and starts the agent. No reboot is needed. On failure it prints a short
-code — `cerberus: E13` — and the page that decodes it:
+release, installs `/usr/sbin/cerberus`, has it write `/etc/init.d/S99cerberus`, puts the address and
+the token into the U-Boot environment and starts the agent. No reboot is needed. On failure it prints
+a short code — `cerberus: E13` — and the page that decodes it:
 <https://cloud.openipc.ru/docs/openipc-camera/#codes>.
 
 To take it all off again:
@@ -57,8 +57,8 @@ By hand, the same thing:
 ```sh
 # cerberus-arm, cerberus-mipsel, ... — see Releases below
 curl -fsSL -o /usr/sbin/cerberus https://github.com/OpenIPC/cerberus/releases/latest/download/cerberus-arm
-curl -fsSL -o /etc/init.d/S99cerberus https://github.com/OpenIPC/cerberus/releases/latest/download/S99cerberus
-chmod +x /usr/sbin/cerberus /etc/init.d/S99cerberus
+chmod +x /usr/sbin/cerberus
+cerberus init-script                   # writes /etc/init.d/S99cerberus, which starts this binary
 fw_setenv cerberus_api https://cloud-api.openipc.ru/v1
 fw_setenv cerberus_enrollment_token tok_...
 /etc/init.d/S99cerberus restart
@@ -82,7 +82,6 @@ at all:
 | `cerberus-x86_64` | VMs and test boxes |
 | `install.sh` | the installer; `--uninstall` takes the agent off again |
 | `uninstall.sh` | the old address of `install.sh --uninstall`, kept for commands already printed |
-| `S99cerberus` | the BusyBox init script |
 | `SHA256SUMS` | checksums of all of the above; the installer verifies against it |
 | `LICENSE.md` | the license |
 
@@ -252,14 +251,16 @@ To check it on a camera: `cerberus snapshot` (does majestic hand out a frame as 
 
 ## Building
 
-The agent is the `src/` directory: `src/cerberus.c`, its `Makefile` and the `S99cerberus` init
-script — nothing else is needed to build or install it. The top-level `Makefile` forwards to it.
+The agent is the `src/` directory: `src/cerberus.c` and its `Makefile` — nothing else is needed to
+build or install it. The top-level `Makefile` forwards to it. There is no init script among the
+files: the binary carries it and writes it (`cerberus init-script`), so a script can never belong to
+another release than the agent it starts.
 
 ```sh
 make                                   # native, against the system mbedTLS (3.x or 2.28 LTS)
 make STATIC=1                          # static
 make VERSION=1.2.0                     # the version the agent reports (default: the one in src/cerberus.c)
-make install DESTDIR=/tmp/rootfs       # /usr/sbin/cerberus + /etc/init.d/S99cerberus
+make install DESTDIR=/tmp/rootfs       # /usr/sbin/cerberus + /etc/init.d/S99cerberus, written by it
 ```
 
 The release binaries come from `ci/build.sh`, which needs only Docker: it fetches a
@@ -270,15 +271,20 @@ checks its X25519 key against `wg pubkey`:
 ```sh
 ci/build.sh                            # arm, mipsel, aarch64, x86_64 → dist/cerberus-<arch>
 ci/build.sh mipsel                     # one of them
-ci/assemble.sh                         # + installers, init script, SHA256SUMS → a release in dist/
+ci/assemble.sh                         # + installers, SHA256SUMS → a release in dist/
 ```
 
 Inside a firmware build, with the firmware's own toolchain, point at `src/`:
 
 ```sh
 make -C src CC=mipsel-openipc-linux-musl-gcc MBEDTLS=<buildroot-staging> STATIC=1
-make -C src install DESTDIR=<target-rootfs>
+make -C src install DESTDIR=<target-rootfs> RUN=<host-dir>/bin/qemu-mipsel
 ```
+
+`make install` gets the init script by running the binary it built, which a cross build cannot do by
+itself: give it a user-mode emulator in `RUN` (Buildroot's `host-qemu`; a static binary needs no
+sysroot), or pass `INIT_SCRIPT=no` and have the firmware run `cerberus init-script` on the camera.
+With neither it stops instead of installing an agent that nothing starts.
 
 ## Tests
 
