@@ -70,7 +70,7 @@
 
 /* Release builds pass the tag in (`make VERSION=...`); a plain `make` reports the source version. */
 #ifndef CERBERUS_VERSION
-#define CERBERUS_VERSION "0.2.2"
+#define CERBERUS_VERSION "0.3.0"
 #endif
 
 /* Where the errors are decoded. Printed after every fatal one: the reader is on a camera
