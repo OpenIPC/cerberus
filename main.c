@@ -938,6 +938,12 @@ static int url_split(const char *url, int *tls, char *host, size_t host_sz,
     return 0;
 }
 
+/* Whether url_split() will take this address. */
+static int url_ok(const char *url)
+{
+    return !strncmp(url, "https://", 8) || !strncmp(url, "http://", 7);
+}
+
 /* Case-insensitive search inside the response head only — never into a JPEG body. */
 static const char *head_find(const char *head, size_t head_len, const char *needle)
 {
@@ -1000,10 +1006,14 @@ static long http_do(const struct http_req *rq, unsigned char *resp, size_t resp_
     long body_len;
     int rc, n, overflow = 0, chunked;
 
+    /* Not die(): this runs inside watch() too, for majestic's frame, and a typo in an optional
+     * setting must not take the whole agent down with it — init would never bring it back. */
     memset(&c, 0, sizeof c);
     if (url_split(rq->url, &c.tls, host, sizeof host, port, sizeof port, path, sizeof path,
-                  auth, sizeof auth) != 0)
-        die("unsupported URL: %s", rq->url);
+                  auth, sizeof auth) != 0) {
+        warn_("unsupported URL (want http:// or https://): %s", rq->url);
+        return -1;
+    }
 
     mbedtls_net_init(&c.net);
     if ((rc = mbedtls_net_connect(&c.net, host, port, MBEDTLS_NET_PROTO_TCP)) != 0) {
@@ -1644,6 +1654,12 @@ static long snapshot_take(void)
     int status = 0;
     long n;
 
+    if (!url_ok(g_cfg.snapshot_url)) {
+        if (complaints++ < 3)
+            warn_("CERBERUS_SNAPSHOT_URL is not an http(s) URL (%s) — motion goes out without frames",
+                  g_cfg.snapshot_url);
+        return -1;
+    }
     if (!g_frame && !(g_frame = malloc((size_t)g_cfg.snapshot_max + 1)))
         return -1;
     rq.url = g_cfg.snapshot_url;
@@ -2377,6 +2393,9 @@ int main(int argc, char **argv)
     if (!strcmp(cmd, "motion")) return cmd_motion();
     if (!strcmp(cmd, "snapshot")) return cmd_snapshot();
     if (!strcmp(cmd, "run")) {
+        /* A configuration error, so it dies here and now — not as an enrolment retried forever. */
+        if (!url_ok(g_cfg.api))
+            die("CERBERUS_API is not an http(s) URL: %s", g_cfg.api);
         catch_signals();
         /* Ненулевой ответ здесь бывает ровно один: попросили остановиться. Это не отказ. */
         if (enroll_with_retry() != 0) {
