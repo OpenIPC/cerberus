@@ -93,29 +93,23 @@ if [ -z "$arch" ]; then
 fi
 
 tmp="/tmp/cerberus.$$"
-rc="/tmp/S99cerberus.$$"
-trap 'rm -f "$tmp" "$tmp.sums" "$rc"' EXIT INT TERM
+trap 'rm -f "$tmp" "$tmp.sums"' EXIT INT TERM
 
 curl -fsL -o "$tmp" "$DIST/cerberus-$arch" || die 14
-curl -fsL -o "$rc" "$DIST/S99cerberus" || die 14
 
 if command -v sha256sum >/dev/null 2>&1; then
     curl -fsL -o "$tmp.sums" "$DIST/SHA256SUMS" || die 15
-    for pair in "$tmp:cerberus-$arch" "$rc:S99cerberus"; do
-        file=${pair%%:*}
-        name=${pair#*:}
-        want=$(awk -v n="$name" '$2 == n || $2 == "*" n { print $1 }' "$tmp.sums")
-        have=$(sha256sum "$file" | cut -d' ' -f1)
-        [ -n "$want" ] && [ "$want" = "$have" ] || die 15
-    done
+    want=$(awk -v n="cerberus-$arch" '$2 == n || $2 == "*" n { print $1 }' "$tmp.sums")
+    have=$(sha256sum "$tmp" | cut -d' ' -f1)
+    [ -n "$want" ] && [ "$want" = "$have" ] || die 15
     say "cerberus-$arch sha256 ok"
 fi
 
 stop_agent
 
-chmod 0755 "$tmp" "$rc" || die 16
+chmod 0755 "$tmp" || die 16
 mv "$tmp" "$AGENT" || die 16
-mv "$rc" "$INIT" || die 16
+"$AGENT" init-script "$INIT" || die 16
 mkdir -p "$CONF" || die 16
 chmod 0700 "$CONF" || die 16
 say "installed $AGENT"

@@ -24,6 +24,7 @@ check() { # check <label> <actual> <expected>
 	fi
 }
 yes_if() { if "$@" >/dev/null 2>&1; then echo yes; else echo no; fi; }
+daemon_of() { sh -c 'eval "$(sed -n "/^DAEMON=/p")"; printf %s "$DAEMON"'; }
 skip() { printf '  skip  %s\n' "$1"; SKIP=$((SKIP + 1)); }
 section() { echo; echo "== $1 =="; }
 dump() { sed 's/^/        | /' "$1"; }
@@ -31,9 +32,11 @@ dump() { sed 's/^/        | /' "$1"; }
 # ------------------------------------------------------------------------------- toolchain
 echo "==> installing the toolchain"
 if command -v apk >/dev/null 2>&1; then
-	# openrc only for start-stop-daemon, which S99cerberus calls: BusyBox on a camera has it, Alpine's does not.
+	# openrc only for start-stop-daemon, which the init script calls: BusyBox on a camera has it, Alpine's does not.
 	apk add --no-cache gcc musl-dev make mbedtls-dev mbedtls-static wireguard-tools iproute2 \
 		openssl python3 curl openrc >/dev/null 2>&1 || { echo "apk add failed"; exit 1; }
+	# The init script is text inside the binary, so this is the only place it gets linted.
+	apk add --no-cache shellcheck >/dev/null 2>&1 || true
 	LIBC=musl
 else
 	export DEBIAN_FRONTEND=noninteractive
@@ -440,17 +443,18 @@ check "CERBERUS_* wins over STREQ_*" \
 
 # The init script reads the new name, and the old one when the new one is not there.
 SUB=$T/s99.env
+S99=$T/S99cerberus
 printf 'streq_subnet=10.99.0.0/16\n' >$SUB
-mkdir -p /usr/sbin && cp $A /usr/sbin/cerberus
-check "S99cerberus falls back to streq_* keys" \
-	"$(env PATH="$T/fw:$PATH" FAKE_UBOOT=$SUB CERBERUS_STORE=file:$T/nothing.env sh /src/src/S99cerberus status 2>/dev/null | sed -n 's/^network subnet *//p')" \
+$A init-script $S99 2>/dev/null
+check "the init script falls back to streq_* keys" \
+	"$(env PATH="$T/fw:$PATH" FAKE_UBOOT=$SUB CERBERUS_STORE=file:$T/nothing.env sh $S99 status 2>/dev/null | sed -n 's/^network subnet *//p')" \
 	"10.99.0.0/16 (from CERBERUS_SUBNET)"
 printf 'cerberus_subnet=10.98.0.0/16\n' >>$SUB
 check "and prefers cerberus_*" \
-	"$(env PATH="$T/fw:$PATH" FAKE_UBOOT=$SUB CERBERUS_STORE=file:$T/nothing.env sh /src/src/S99cerberus status 2>/dev/null | sed -n 's/^network subnet *//p')" \
+	"$(env PATH="$T/fw:$PATH" FAKE_UBOOT=$SUB CERBERUS_STORE=file:$T/nothing.env sh $S99 status 2>/dev/null | sed -n 's/^network subnet *//p')" \
 	"10.98.0.0/16 (from CERBERUS_SUBNET)"
 check "unprovisioned: start says so and exits 0" \
-	"$(env PATH="$T/fw:$PATH" FAKE_UBOOT=$T/empty.env sh /src/src/S99cerberus start 2>&1; echo "rc=$?")" \
+	"$(env PATH="$T/fw:$PATH" FAKE_UBOOT=$T/empty.env sh $S99 start 2>&1; echo "rc=$?")" \
 	"cerberus: not provisioned (fw_setenv cerberus_api ...)
 rc=0"
 
@@ -461,8 +465,8 @@ REL=$T/release
 mkdir -p $REL
 ARCH=$(uname -m)
 cp $A $REL/cerberus-$ARCH
-cp /src/install.sh /src/uninstall.sh /src/src/S99cerberus $REL/
-(cd $REL && for f in cerberus-$ARCH install.sh uninstall.sh S99cerberus; do
+cp /src/install.sh /src/uninstall.sh $REL/
+(cd $REL && for f in cerberus-$ARCH install.sh uninstall.sh; do
 	printf '%s  %s\n' "$(sha256sum $f | cut -d' ' -f1)" "$f"; done >SHA256SUMS)
 rm -f /usr/sbin/cerberus /etc/init.d/S99cerberus
 mkdir -p /etc/init.d
@@ -484,6 +488,7 @@ check "no token: installs, exits 0" "$?" "0"
 check "picks the build for this CPU" "$(cmp -s /usr/sbin/cerberus $REL/cerberus-$ARCH && echo yes)" "yes"
 check "verifies it against SHA256SUMS" "$(yes_if grep -q "cerberus-$ARCH sha256 ok" inst-notoken.log)" "yes"
 check "installs the init script" "$(yes_if test -x /etc/init.d/S99cerberus)" "yes"
+check "written by the agent it starts" "$(daemon_of </etc/init.d/S99cerberus)" "/usr/sbin/cerberus"
 check "and says what to set, by the new names" "$(yes_if grep -q 'fw_setenv cerberus_api' inst-notoken.log)" "yes"
 
 cp $REL/SHA256SUMS $T/sums.good
@@ -491,6 +496,12 @@ sed -i "s/^[0-9a-f]*  cerberus-$ARCH\$/$(printf '0%.0s' $(seq 64))  cerberus-$AR
 inst >inst-bad.log 2>&1
 check "a binary that does not match its sum is refused" "$?" "15"
 cp $T/sums.good $REL/SHA256SUMS
+
+# Where the init script cannot go, the installer stops with E16, as it always did.
+mv /etc/init.d /etc/init.d.real && touch /etc/init.d
+inst >inst-noinit.log 2>&1
+check "an /etc/init.d it cannot write to is E16" "$?" "16"
+rm -f /etc/init.d && mv /etc/init.d.real /etc/init.d
 
 # A claim code exists before the camera ever reaches the cloud — its hash is what enrolment sends —
 # so seeing one proves nothing. The installer has to wait for the enrolment itself, and say E21
@@ -603,18 +614,38 @@ check "and, a moment later, itself" "$(yes_if test -e $T/victim/cerberus)" "no"
 
 # ------------------------------------------------------------------ installers
 section "shipped scripts"
-for s in src/S99cerberus install.sh uninstall.sh; do
+for s in install.sh uninstall.sh; do
 	check "$s parses" "$(yes_if sh -n /src/$s)" "yes"
 done
 for s in install.sh uninstall.sh; do
 	check "$s carries no comments" "$(tail -n +2 /src/$s | grep -c '^[[:space:]]*#')" "0"
 done
 
-# The binary carries the init script; while src/S99cerberus is still shipped the two must be one text.
-check "init-script is src/S99cerberus" \
-	"$($A init-script - 2>/dev/null | sed "s|^DAEMON=.*|DAEMON='/usr/sbin/cerberus'|" | cmp -s - /src/src/S99cerberus && echo yes || echo no)" "yes"
-daemon_of() { sh -c 'eval "$(sed -n "/^DAEMON=/p")"; printf %s "$DAEMON"'; }
-check "and starts the binary that wrote it" "$($A init-script - 2>/dev/null | daemon_of)" "$A"
+# The binary carries the init script; no copy of it is shipped as a file.
+check "init-script - prints the init script" "$($A init-script - 2>/dev/null | head -1)" "#!/bin/sh"
+check "which starts the binary that wrote it" "$($A init-script - 2>/dev/null | daemon_of)" "$A"
+if command -v shellcheck >/dev/null 2>&1; then
+	# SC2155: `export X="$(fw_printenv ...)"` masking the exit status is the point — a key that is
+	# not set is simply empty.
+	$A init-script - 2>/dev/null >$T/S99lint
+	check "and is shellcheck-clean" \
+		"$(shellcheck -S warning -e SC2155 $T/S99lint >$T/S99lint.log 2>&1 && echo yes || { dump $T/S99lint.log >&2; echo no; })" "yes"
+else
+	skip "the init script under shellcheck (not installed here)"
+fi
+
+# make install has no init script to copy: it runs the binary it built to write one, pointing at
+# the installed binary rather than the build tree — or refuses when that binary cannot run here.
+ROOT=$T/rootfs
+check "make install writes the init script" \
+	"$(yes_if make -C /build install DESTDIR=$ROOT)$(yes_if test -x $ROOT/etc/init.d/S99cerberus)" "yesyes"
+check "which starts the installed binary" "$(daemon_of <$ROOT/etc/init.d/S99cerberus)" "/usr/sbin/cerberus"
+$A init-script - 2>/dev/null | sed "s|^DAEMON=.*|DAEMON='/usr/sbin/cerberus'|" >$T/S99want
+check "and is otherwise what the binary writes" "$(yes_if cmp $T/S99want $ROOT/etc/init.d/S99cerberus)" "yes"
+check "a binary that cannot run here: make install refuses" \
+	"$(yes_if make -C /build install DESTDIR=$T/cross RUN=false)$(yes_if test -e $T/cross/etc/init.d/S99cerberus)" "nono"
+check "unless told the firmware writes it" \
+	"$(yes_if make -C /build install DESTDIR=$T/cross RUN=false INIT_SCRIPT=no)$(yes_if test -x $T/cross/usr/sbin/cerberus)" "yesyes"
 $A init-script $T/initd/S99cerberus >/dev/null 2>&1
 check "init-script PATH writes an executable script" "$(yes_if test -x $T/initd/S99cerberus)" "yes"
 check "that parses" "$(yes_if sh -n $T/initd/S99cerberus)" "yes"
