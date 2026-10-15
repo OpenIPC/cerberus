@@ -23,7 +23,7 @@
 #        VERSION=1.2.0 OUT=dist ci/build.sh
 #
 # VERSION defaults to the nearest v* tag, without the v. It is compiled into the binary — it is what
-# the agent reports to the coordinator. With no tag in reach the binary keeps the version in main.c.
+# the agent reports to the coordinator. With no tag in reach the binary keeps the version in src/cerberus.c.
 #
 # Output: $OUT/cerberus-<arch>. Names carry no version on purpose: the installer fetches
 # releases/latest/download/cerberus-<arch>, and that address must not change between releases.
@@ -71,7 +71,7 @@ for arch in "${ARCHES[@]}"; do
 		*) echo "unknown arch '$arch' (want arm | mipsel | aarch64 | x86_64)"; exit 2 ;;
 	esac
 
-	echo "==> cerberus-$arch (Bootlin $tc musl $TOOLCHAIN_RELEASE, mbedTLS $MBEDTLS_VERSION, version ${VERSION:-from main.c})"
+	echo "==> cerberus-$arch (Bootlin $tc musl $TOOLCHAIN_RELEASE, mbedTLS $MBEDTLS_VERSION, version ${VERSION:-from cerberus.c})"
 
 	# -i matters: without it the container gets no stdin, `sh -s` reads EOF, and the build silently
 	# does nothing while exiting 0.
@@ -110,7 +110,7 @@ CROSS=${CC%gcc}
 mkdir -p /build/mbedtls /build/prefix/lib
 tar -xjf "/cache/mbedtls-$MBEDTLS_VERSION.tar.bz2" -C /build/mbedtls --strip-components=1
 # PSA takes its randomness from cerberus's own generator instead of gathering it from the kernel on
-# every start: on some cameras that read blocks for minutes ("Randomness" in main.c).
+# every start: on some cameras that read blocks for minutes ("Randomness" in src/cerberus.c).
 cfg=/build/mbedtls/include/mbedtls/mbedtls_config.h
 sed -i 's|^//#define MBEDTLS_PSA_CRYPTO_EXTERNAL_RNG$|#define MBEDTLS_PSA_CRYPTO_EXTERNAL_RNG|' "$cfg"
 grep -q '^#define MBEDTLS_PSA_CRYPTO_EXTERNAL_RNG$' "$cfg"
@@ -119,7 +119,7 @@ make -s -C /build/mbedtls/library static CC="$CC" AR="${CROSS}ar" \
 cp /build/mbedtls/library/*.a /build/prefix/lib/
 cp -r /build/mbedtls/include /build/prefix/
 
-cp /src/main.c /src/Makefile /build/
+cp /src/src/cerberus.c /src/src/Makefile /build/
 cd /build
 make CC="$CC" STRIP="${CROSS}strip" MBEDTLS=/build/prefix STATIC=1 VERSION="$VERSION" EXTRA_CFLAGS=-Werror
 

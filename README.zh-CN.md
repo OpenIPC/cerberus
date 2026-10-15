@@ -201,10 +201,13 @@ cerberus snapshot  # 从 CERBERUS_SNAPSHOT_URL 取一帧到 /tmp/cerberus-snapsh
 
 ## 构建
 
+代理就是 `src/` 目录：`src/cerberus.c`、它的 `Makefile` 和启动脚本 `S99cerberus`——构建和安装不需要其他任何文件。
+顶层的 `Makefile` 只是把命令转交给它。
+
 ```sh
 make                                   # 本机构建，链接系统的 mbedTLS（3.x 或 2.28 LTS）
 make STATIC=1                          # 静态构建
-make VERSION=1.2.0                     # 代理上报的版本（默认取自 main.c）
+make VERSION=1.2.0                     # 代理上报的版本（默认取自 src/cerberus.c）
 make install DESTDIR=/tmp/rootfs       # /usr/sbin/cerberus + /etc/init.d/S99cerberus
 ```
 
@@ -218,10 +221,11 @@ ci/build.sh mipsel                     # 其中之一
 ci/assemble.sh                         # + 安装脚本、启动脚本、SHA256SUMS → dist/ 中的完整发布
 ```
 
-在固件构建环境中，使用固件自带的工具链：
+在固件构建环境中，使用固件自带的工具链，指向 `src/`：
 
 ```sh
-make CC=mipsel-openipc-linux-musl-gcc MBEDTLS=<buildroot-staging>
+make -C src CC=mipsel-openipc-linux-musl-gcc MBEDTLS=<buildroot-staging> STATIC=1
+make -C src install DESTDIR=<target-rootfs>
 ```
 
 ## 测试

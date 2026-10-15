@@ -241,10 +241,13 @@ P2P этот агент не делает — камера остаётся на
 
 ## Сборка
 
+Агент — это каталог `src/`: `src/cerberus.c`, его `Makefile` и init-скрипт `S99cerberus`; больше для
+сборки и установки ничего не нужно. `Makefile` в корне просто передаёт команды туда.
+
 ```sh
 make                                   # нативно, против системного mbedTLS (3.x или 2.28 LTS)
 make STATIC=1                          # статически
-make VERSION=1.2.0                     # версия, которую агент сообщает (по умолчанию — из main.c)
+make VERSION=1.2.0                     # версия, которую агент сообщает (по умолчанию — из src/cerberus.c)
 make install DESTDIR=/tmp/rootfs       # /usr/sbin/cerberus + /etc/init.d/S99cerberus
 ```
 
@@ -259,10 +262,11 @@ ci/build.sh mipsel                     # одну из них
 ci/assemble.sh                         # + установщики, init-скрипт, SHA256SUMS → релиз в dist/
 ```
 
-Внутри сборки прошивки, её собственным тулчейном:
+Внутри сборки прошивки, её собственным тулчейном, указывая на `src/`:
 
 ```sh
-make CC=mipsel-openipc-linux-musl-gcc MBEDTLS=<buildroot-staging>
+make -C src CC=mipsel-openipc-linux-musl-gcc MBEDTLS=<buildroot-staging> STATIC=1
+make -C src install DESTDIR=<target-rootfs>
 ```
 
 ## Тесты

@@ -1,5 +1,6 @@
 # build output
 /cerberus
+/src/cerberus
 /dist/
 *.o
 /.cache/
