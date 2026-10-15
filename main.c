@@ -1474,7 +1474,6 @@ static const char *ping_target(void)
     unsigned long net;
 
     if (*g_cfg.ping_target) return g_cfg.ping_target;
-    if (target[0]) return target;
 
     /* Координатор назвал адрес хаба — пингуем его, а не вывод из подсети: у арендатора хаб вообще
      * не в его диапазоне. */
@@ -1483,7 +1482,10 @@ static const char *ping_target(void)
         return target;
     }
 
-    if (sscanf(g_cfg.subnet, "%u.%u.%u.%u/%d", &a, &b, &c, &d, &prefix) < 4)
+    /* The subnet the interface is actually in (node_subnet(), as link_apply uses), and derived anew
+     * every time: a directive may rotate it, and a probe left pinging the old network would rebuild
+     * and restart a tunnel that is fine. */
+    if (sscanf(node_subnet(), "%u.%u.%u.%u/%d", &a, &b, &c, &d, &prefix) < 4)
         return "";
     if (prefix <= 0 || prefix > 30) prefix = 16;
 
