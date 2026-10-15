@@ -131,7 +131,8 @@ fw_setenv cerberus_enrollment_token tok_...
 `CERBERUS_RETRY_MAX` (`5` / `300`, отступ повторов энролла), `CERBERUS_INSECURE=1` (без проверки TLS,
 только для отладки), `CERBERUS_DRY_RUN=1` (печатать команды `ip`/`wg`, а не выполнять),
 `CERBERUS_MOTION_HOOK` (`/usr/sbin/motion.sh`), `CERBERUS_MOTION_QUIET` (`10`, секунд тишины, после
-которых эпизод кончился), `CERBERUS_PIDFILE` (`/var/run/cerberus.pid`), `CERBERUS_SEED`
+которых эпизод кончился), `CERBERUS_MOTION_MAX` (`600`, через столько секунд эпизод обрывается, что бы
+ни происходило), `CERBERUS_PIDFILE` (`/var/run/cerberus.pid`), `CERBERUS_SEED`
 (`/etc/cerberus/seed`, случайность, сохранённая между запусками, чтобы запуск не ждал ядро),
 `CERBERUS_RANDOM_DEV` (`/dev/urandom`), `CERBERUS_GETRANDOM=0` (не спрашивать сначала getrandom(2)).
 

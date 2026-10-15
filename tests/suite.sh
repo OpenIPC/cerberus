@@ -63,6 +63,8 @@ check "VERSION= is compiled in" "$(./cerberus --help 2>&1 | head -1 | cut -d' ' 
 make clean >/dev/null && make >/dev/null 2>&1 || { echo "build failed"; exit 1; }
 check "--help exits 0" "$(./cerberus --help >/dev/null 2>&1; echo $?)" "0"
 check "an unknown subcommand exits 2" "$(./cerberus frobnicate >/dev/null 2>&1; echo $?)" "2"
+check "--help lists every knob (#10)" \
+	"$(./cerberus --help 2>&1 | grep -cE 'CERBERUS_(STALE_AFTER|RETRY_MIN|RETRY_MAX|MOTION_MAX) ')" "4"
 
 # ------------------------------------------------------------------------- fixtures
 umask 077
@@ -203,6 +205,28 @@ CERBERUS_ENROLLMENT_TOKEN=tok_wrong $A enroll >badtoken.log 2>&1
 check "a wrong token is reported, non-zero" "$?" "1"
 check "with the coordinator's status" "$(yes_if grep -q 'enroll rejected: HTTP 401' badtoken.log)" "yes"
 
+# A hostname is typed by a person (#8): quotes, a backslash and a tab must arrive as JSON, as typed.
+# A wrong token keeps the real one unspent; the body is recorded as parsed JSON only when it is JSON.
+export ODD_HOST='Gate "north" \ 1	x'
+CERBERUS_STORE=file:$T/odd.env CERBERUS_HOSTNAME="$ODD_HOST" CERBERUS_ENROLLMENT_TOKEN=tok_wrong $A enroll >odd.log 2>&1
+check "a hostname with quotes is sent as valid JSON" \
+	"$(q 'import os; E = [r for r in R if r["path"] == "/v1/enroll"][-1]; print(E["body"]["hostname"] == os.environ["ODD_HOST"])')" "True"
+BEFORE=$(q 'print(len(R))')
+CERBERUS_STORE=file:$T/odd.env CERBERUS_HOSTNAME="$(head -c 3000 /dev/zero | tr '\0' h)" CERBERUS_ENROLLMENT_TOKEN=tok_wrong \
+	$A enroll >long.log 2>&1
+check "a request that does not fit is refused, non-zero" "$?" "1"
+check "before anything is sent" "$(q 'print(len(R))')" "$BEFORE"
+check "and says so" "$(yes_if grep -q 'does not fit' long.log)" "yes"
+
+# A malformed address costs what depends on it, never the running agent (#6).
+CERBERUS_API=http:// $A run >badapi.log 2>&1
+check "run: CERBERUS_API without a host is refused at start" "$?:$(yes_if grep -q 'CERBERUS_API is not an http(s) URL' badapi.log)" "1:yes"
+for u in 127.0.0.1/image.jpg http:// http://user@/image.jpg; do
+	CERBERUS_SNAPSHOT_URL=$u $A snapshot >badsnap.log 2>&1
+	check "snapshot from '$u': a warning, not a fatal error" \
+		"$(yes_if grep -q 'not an http(s) URL' badsnap.log)$(yes_if grep -q 'cerberus: error' badsnap.log)" "yesno"
+done
+
 CERBERUS_ENROLLMENT_TOKEN=$TOKEN $A enroll >enroll.log 2>&1
 check "enrolls" "$?" "0"
 check "over TLS" "$(yes_if grep -q '^cerberus: TLS ok' enroll.log)" "yes"
@@ -239,6 +263,13 @@ cp agent.env enrolled.env
 CERBERUS_ENROLLMENT_TOKEN=$TOKEN $A status >status.out 2>/dev/null
 check "status names the node" "$(yes_if grep -q "^node  *$NODE" status.out)" "yes"
 check "status shows the claim code" "$(yes_if grep -q "^claim code  *$CLAIM" status.out)" "yes"
+
+# The probe pings the hub in the network the interface is in (#7): with a networkSubnet and no
+# hubOverlayIp, the first address of that subnet — not of CERBERUS_SUBNET's default pool.
+sed '/^cerberus_hub_ip=/d' enrolled.env >nohub.env
+check "ping target: the network's subnet, not CERBERUS_SUBNET" \
+	"$(CERBERUS_STORE=file:$T/nohub.env CERBERUS_PING_INTERVAL=60 CERBERUS_PING_TIMEOUT=1 $A status 2>/dev/null | sed -n 's/^tunnel ping.*(\(.*\))$/\1/p')" \
+	"$(echo $SUBNET | sed 's|0/24$|1|')"
 
 # -------------------------------------------------------------------- interface (dry)
 section "interface programming (dry run)"
