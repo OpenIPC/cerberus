@@ -81,7 +81,7 @@ jobs:
   release:
     name: release
     # A v* tag publishes the binaries that were just built and tested — the same files, not a rebuild —
-    # together with the installer, the uninstaller, the init script and SHA256SUMS over all of them.
+    # together with the installer, the uninstaller (now a wrapper around it), the init script and SHA256SUMS over all of them.
     # Asset names carry no version: cameras fetch releases/latest/download/<name>.
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [lint, test, build]
