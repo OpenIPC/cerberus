@@ -161,7 +161,7 @@ struct cfg {
 
 static struct cfg g_cfg;
 
-/* CERBERUS_<name>, then the name this agent had before it was renamed — CERBERUS_<name> — so a script or an
+/* CERBERUS_<name>, then the name this agent had before it was renamed — STREQ_<name> — so a script or an
  * init file written for the old name keeps working. */
 static const char *cfg_env(const char *name, const char *fallback)
 {
