@@ -178,8 +178,9 @@ echo "keygen on $ARCH matches wg pubkey"
 
 # ...and TLS, against what the configuration above has to keep: TLS 1.3 and 1.2, ECDSA and RSA
 # servers (RSA under TLS 1.3 signs with RSA-PSS — the option that is easiest to trim by mistake),
-# a chain from an RSA root through an ECDSA intermediate as Let's Encrypt's is, and a server from
-# another CA, which must be refused. Local servers only: a release build does not depend on the net.
+# a chain from an RSA root through an ECDSA intermediate as Let's Encrypt's is, and two servers that
+# must be refused: one from another CA, one with a trusted certificate for another name. Local
+# servers only: a release build does not depend on the net.
 cd /tmp
 ossl() { openssl "$@" >/dev/null 2>&1; }
 ossl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 -subj /CN=ca -keyout ca.key -out ca.crt
@@ -192,7 +193,9 @@ leaf() { # leaf <name> <issuer> <ext> <newkey args...>
 	ossl req -newkey "$@" -nodes -subj "/CN=$n" -keyout "$n.key" -out "$n.csr"
 	ossl x509 -req -in "$n.csr" -CA "$i.crt" -CAkey "$i.key" -CAcreateserial -days 1 -extfile "$e" -out "$n.crt"
 }
+printf 'subjectAltName=DNS:elsewhere.test\n' >other.ext
 leaf ec ca leaf.ext ec -pkeyopt ec_paramgen_curve:prime256v1
+leaf other ca other.ext ec -pkeyopt ec_paramgen_curve:prime256v1
 leaf rsa ca leaf.ext rsa:2048
 leaf inter rroot inter.ext ec -pkeyopt ec_paramgen_curve:secp384r1
 leaf chain inter leaf.ext ec -pkeyopt ec_paramgen_curve:prime256v1
@@ -202,18 +205,29 @@ tls() { # tls <label> <want ok|refused> <ca> <cert> <s_server args...>
 	port=$((port + 1))
 	openssl s_server -quiet -www -accept $port -cert "$cert.crt" -key "$cert.key" "$@" >/dev/null 2>&1 &
 	srv=$!
-	sleep 0.5
-	out=$(CERBERUS_CA=/tmp/$ca.crt CERBERUS_SNAPSHOT_URL=https://localhost:$port/ run snapshot 2>&1 || true)
-	case "$out" in *"TLS ok"*) got=ok ;; *) got=refused ;; esac
+	# Listening, or the case proves nothing: a refusal must come from the certificate, not a closed port.
+	for _ in $(seq 50); do (exec 3<>/dev/tcp/127.0.0.1/$port) 2>/dev/null && break; sleep 0.1; done
+	(exec 3<>/dev/tcp/127.0.0.1/$port) 2>/dev/null || { echo "TLS on $ARCH: $label — the test server did not start"; exit 1; }
+	out=$(CERBERUS_CA=/tmp/$ca.crt CERBERUS_SNAPSHOT_URL=https://localhost:$port/ run snapshot 2>&1) && rc=0 || rc=$?
 	kill $srv 2>/dev/null || true
+	# `snapshot` exits 1 even on success here: s_server's page is not a JPEG. What decides is what it
+	# saw — the page over TLS, or a handshake refused by certificate verification (-0x2700). A crash,
+	# a timeout or any other error is neither, and fails the build.
+	case "$out" in
+		*"TLS ok"*"HTTP 200"*) got=ok ;;
+		*"handshake with localhost failed (-0x2700)"*) got=refused ;;
+		*) got="something else (exit $rc)" ;;
+	esac
 	[ "$got" = "$want" ] || { echo "TLS on $ARCH: $label — $got, want $want"; echo "$out"; exit 1; }
 	echo "TLS on $ARCH: $label — $got"
 }
 tls "1.3, ECDSA P-256"                 ok      ca    ec    -tls1_3
 tls "1.3, RSA (RSA-PSS)"               ok      ca    rsa   -tls1_3
+tls "1.2, ECDHE-ECDSA"                 ok      ca    ec    -tls1_2
 tls "1.2, ECDHE-RSA"                   ok      ca    rsa   -tls1_2
 tls "RSA root, ECDSA intermediate"     ok      rroot chain -cert_chain inter.crt
 tls "a certificate from another CA"    refused rogue ec
+tls "a certificate for another name"   refused ca    other
 cd /build
 
 cp cerberus "/out/cerberus-$ARCH"
