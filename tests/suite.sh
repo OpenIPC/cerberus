@@ -564,12 +564,21 @@ done
 
 # The binary carries the init script; while src/S99cerberus is still shipped the two must be one text.
 check "init-script is src/S99cerberus" \
-	"$($A init-script - 2>/dev/null | sed 's|^DAEMON=.*|DAEMON=/usr/sbin/cerberus|' | cmp -s - /src/src/S99cerberus && echo yes || echo no)" "yes"
-check "and starts the binary that wrote it" "$($A init-script - 2>/dev/null | sed -n 's/^DAEMON=//p')" "$A"
+	"$($A init-script - 2>/dev/null | sed "s|^DAEMON=.*|DAEMON='/usr/sbin/cerberus'|" | cmp -s - /src/src/S99cerberus && echo yes || echo no)" "yes"
+daemon_of() { sh -c 'eval "$(sed -n "/^DAEMON=/p")"; printf %s "$DAEMON"'; }
+check "and starts the binary that wrote it" "$($A init-script - 2>/dev/null | daemon_of)" "$A"
 $A init-script $T/initd/S99cerberus >/dev/null 2>&1
 check "init-script PATH writes an executable script" "$(yes_if test -x $T/initd/S99cerberus)" "yes"
 check "that parses" "$(yes_if sh -n $T/initd/S99cerberus)" "yes"
-check "and leaves no temporary behind" "$(yes_if test -e $T/initd/S99cerberus.new)" "no"
+check "and leaves no temporary behind" "$(ls $T/initd | grep -cv '^S99cerberus$')" "0"
+# A binary kept somewhere with a space and a quote in the path: one shell word, and it still starts.
+ODD="$T/SD Card/it's"
+mkdir -p "$ODD" && cp $A "$ODD/cerberus"
+"$ODD/cerberus" init-script $T/initd/S99odd >/dev/null 2>&1
+check "init-script quotes an odd path" "$(daemon_of <$T/initd/S99odd)" "$ODD/cerberus"
+check "and the script runs that binary" \
+	"$(env PATH="$T/fw:$PATH" FAKE_UBOOT=$T/empty.env CERBERUS_STORE=file:$T/nothing.env sh $T/initd/S99odd status 2>/dev/null | sed -n 's/^node  *//p')" \
+	"(not enrolled)"
 
 echo
 echo "$PASS passed, $FAIL failed, $SKIP skipped"

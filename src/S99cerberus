@@ -3,7 +3,7 @@
 # where cerberus keeps the join material it gets back from the coordinator, so a camera is
 # provisioned with `fw_setenv` and a restart, without touching the read-only rootfs.
 
-DAEMON=/usr/sbin/cerberus
+DAEMON='/usr/sbin/cerberus'
 PIDFILE=/var/run/cerberus.pid
 
 # cerberus_<name>, or streq_<name> — what the keys were called before the agent was renamed. A
@@ -35,7 +35,7 @@ case "$1" in
 	start)
 		[ -n "$CERBERUS_API" ] || { echo "cerberus: not provisioned (fw_setenv cerberus_api ...)"; exit 0; }
 		echo "Starting cerberus..."
-		start-stop-daemon -S -q -m -b -p $PIDFILE -x $DAEMON -- run
+		start-stop-daemon -S -q -m -b -p $PIDFILE -x "$DAEMON" -- run
 		;;
 	stop)
 		echo "Stopping cerberus..."
@@ -50,7 +50,7 @@ case "$1" in
 		"$0" start
 		;;
 	status)
-		$DAEMON status
+		"$DAEMON" status
 		;;
 	*)
 		echo "Usage: $0 {start|stop|restart|status}"

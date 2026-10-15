@@ -2306,7 +2306,7 @@ static const char g_init_tail[] =
     "\tstart)\n"
     "\t\t[ -n \"$CERBERUS_API\" ] || { echo \"cerberus: not provisioned (fw_setenv cerberus_api ...)\"; exit 0; }\n"
     "\t\techo \"Starting cerberus...\"\n"
-    "\t\tstart-stop-daemon -S -q -m -b -p $PIDFILE -x $DAEMON -- run\n"
+    "\t\tstart-stop-daemon -S -q -m -b -p $PIDFILE -x \"$DAEMON\" -- run\n"
     "\t\t;;\n"
     "\tstop)\n"
     "\t\techo \"Stopping cerberus...\"\n"
@@ -2321,7 +2321,7 @@ static const char g_init_tail[] =
     "\t\t\"$0\" start\n"
     "\t\t;;\n"
     "\tstatus)\n"
-    "\t\t$DAEMON status\n"
+    "\t\t\"$DAEMON\" status\n"
     "\t\t;;\n"
     "\t*)\n"
     "\t\techo \"Usage: $0 {start|stop|restart|status}\"\n"
@@ -2330,39 +2330,85 @@ static const char g_init_tail[] =
     "esac\n"
     ;
 
-/* Where this binary is: on a camera /usr/sbin/cerberus, on a bench whatever it is. */
-static void self_path(char *out, size_t out_sz)
+/* Where this binary is: on a camera /usr/sbin/cerberus, on a bench whatever it is. 1 when that is
+ * known, 0 when /proc cannot say and the default stands in, -1 when the path does not fit in `out`
+ * (readlink truncates without saying so — a full buffer is the only sign). */
+static int self_path(char *out, size_t out_sz)
 {
-    ssize_t n = readlink("/proc/self/exe", out, out_sz - 1);
-    if (n <= 0)
-        snprintf(out, out_sz, "%s", DEFAULT_SELF_PATH);
-    else
+    ssize_t n = readlink("/proc/self/exe", out, out_sz);
+    if (n > 0 && (size_t)n < out_sz) {
         out[n] = 0;
+        return 1;
+    }
+    snprintf(out, out_sz, "%s", DEFAULT_SELF_PATH);
+    return n > 0 ? -1 : 0;
 }
 
-/* `cerberus init-script [PATH|-]`: the init script for this binary, at PATH (atomically, 0755) or on
- * stdout. */
+/* `in` as one shell word: in single quotes, a quote inside as '\''. 0 when it does not fit. */
+static int sh_quote(const char *in, char *out, size_t out_sz)
+{
+    size_t n = 0;
+
+    if (out_sz < 3) return 0;
+    out[n++] = '\'';
+    for (; *in; in++) {
+        if (*in == '\'') {
+            if (n + 4 >= out_sz) return 0;
+            memcpy(out + n, "'\\''", 4);
+            n += 4;
+        } else {
+            if (n + 1 >= out_sz) return 0;
+            out[n++] = *in;
+        }
+    }
+    if (n + 2 > out_sz) return 0;
+    out[n++] = '\'';
+    out[n] = 0;
+    return 1;
+}
+
+/*
+ * `cerberus init-script [PATH|-]`: the init script for this binary, at PATH or on stdout.
+ *
+ * Written next to PATH under a name of its own (mkstemp: created exclusively, so neither a symlink
+ * left there nor a second init-script running at the same moment can redirect or mix the write),
+ * made executable through the descriptor, and renamed over PATH only once it is whole.
+ */
 static int cmd_init_script(const char *dest)
 {
-    char self[256], tmp[320];
+    char self[1024], word[4200], tmp[1100];
     FILE *f;
-    int ok;
+    int fd, ok, n;
 
-    self_path(self, sizeof self);
+    if (self_path(self, sizeof self) < 0 || !sh_quote(self, word, sizeof word)) {
+        fprintf(stderr, "cerberus: the path of this binary is too long for an init script\n");
+        return 1;
+    }
     if (!strcmp(dest, "-")) {
-        ok = fputs(g_init_head, stdout) >= 0 && printf("%s\n", self) > 0 && fputs(g_init_tail, stdout) >= 0;
+        ok = fputs(g_init_head, stdout) >= 0 && printf("%s\n", word) > 0 && fputs(g_init_tail, stdout) >= 0;
         return ok && fflush(stdout) == 0 ? 0 : 1;
     }
 
-    snprintf(tmp, sizeof tmp, "%s.new", dest);
+    n = snprintf(tmp, sizeof tmp, "%s.XXXXXX", dest);
+    if (n <= 0 || (size_t)n >= sizeof tmp) {
+        fprintf(stderr, "cerberus: %s is too long a path\n", dest);
+        return 1;
+    }
     mkparent(dest);
-    if (!(f = fopen(tmp, "w"))) {
+    if ((fd = mkstemp(tmp)) < 0) {
+        fprintf(stderr, "cerberus: cannot write next to %s: %s\n", dest, strerror(errno));
+        return 1;
+    }
+    if (!(f = fdopen(fd, "w"))) {
+        close(fd);
+        unlink(tmp);
         fprintf(stderr, "cerberus: cannot write %s: %s\n", tmp, strerror(errno));
         return 1;
     }
-    ok = fputs(g_init_head, f) >= 0 && fprintf(f, "%s\n", self) > 0 && fputs(g_init_tail, f) >= 0;
+    ok = fputs(g_init_head, f) >= 0 && fprintf(f, "%s\n", word) > 0 && fputs(g_init_tail, f) >= 0 &&
+         fchmod(fd, 0755) == 0;
     if (fclose(f) != 0) ok = 0;
-    if (!ok || chmod(tmp, 0755) != 0 || rename(tmp, dest) != 0) {
+    if (!ok || rename(tmp, dest) != 0) {
         fprintf(stderr, "cerberus: cannot install %s: %s\n", dest, strerror(errno));
         unlink(tmp);
         return 1;
@@ -2392,13 +2438,13 @@ static int cmd_clean(void)
         "events", "snapshot_url",
         NULL
     };
-    char self[256];
-    char cmd[320];
+    char self[1024], word[4200];
+    char cmd[4300];
     char *sh[] = { "sh", "-c", NULL, NULL };
-    int i;
+    int i, known;
 
     /* Где мы лежим на самом деле: на камере это /usr/sbin/cerberus, на стенде — что угодно. */
-    self_path(self, sizeof self);
+    known = self_path(self, sizeof self) >= 0;
 
     runf("ip link del dev %s", g_cfg.iface);
     motion_hook_remove();
@@ -2418,7 +2464,13 @@ static int cmd_clean(void)
      * нормальной ФС, но на камере ФС бывает какая угодно, а половина удалённого агента хуже целого.
      * Три секунды — чтобы этот процесс успел закончиться и отдать код возврата тому, кто его звал.
      */
-    snprintf(cmd, sizeof cmd, "(sleep 3; rm -f %s) >/dev/null 2>&1 &", self);
+    /* Quoted: an agent kept under "/mnt/SD Card" must not have rm take two other paths instead. A
+     * path too long to know is left alone rather than guessed at. */
+    if (!known || !sh_quote(self, word, sizeof word)) {
+        warn_("cannot tell where this binary is — remove it by hand");
+        return 0;
+    }
+    snprintf(cmd, sizeof cmd, "(sleep 3; rm -f %s) >/dev/null 2>&1 &", word);
     sh[2] = cmd;
     run(sh, NULL, 0);
     return 0;
