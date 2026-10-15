@@ -644,6 +644,11 @@ $A init-script - 2>/dev/null | sed "s|^DAEMON=.*|DAEMON='/usr/sbin/cerberus'|" >
 check "and is otherwise what the binary writes" "$(yes_if cmp $T/S99want $ROOT/etc/init.d/S99cerberus)" "yes"
 check "a binary that cannot run here: make install refuses" \
 	"$(yes_if make -C /build install DESTDIR=$T/cross RUN=false)$(yes_if test -e $T/cross/etc/init.d/S99cerberus)" "nono"
+check "and puts nothing into the rootfs, the agent included" "$(yes_if test -e $T/cross/usr/sbin/cerberus)" "no"
+check "a refused reinstall keeps the script that was there" \
+	"$(yes_if make -C /build install DESTDIR=$ROOT RUN=false)$(yes_if cmp $T/S99want $ROOT/etc/init.d/S99cerberus)" "noyes"
+check "and leaves no temporary behind" \
+	"$(find $ROOT/etc/init.d /build -maxdepth 1 \( -name '.S99cerberus.new' -o -name 'cerberus.init*' \) | wc -l)" "0"
 check "unless told the firmware writes it" \
 	"$(yes_if make -C /build install DESTDIR=$T/cross RUN=false INIT_SCRIPT=no)$(yes_if test -x $T/cross/usr/sbin/cerberus)" "yesyes"
 $A init-script $T/initd/S99cerberus >/dev/null 2>&1

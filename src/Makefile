@@ -61,21 +61,32 @@ size: $(BIN)
 	@size $(BIN) || true
 	@ls -l $(BIN)
 
-# DAEMON is wherever the binary that wrote the script was, i.e. here; on the target it is PREFIX.
+# The script is made here first, from one run of the binary whose exit status is checked, and only
+# then is anything put into DESTDIR: a refused install leaves the rootfs as it was — no agent that
+# nothing starts, and no script cut short over a good one. DAEMON is wherever the binary that wrote
+# the script was, i.e. here; on the target it is PREFIX. The script goes in under a temporary name
+# and is renamed over the old one, so the target never holds half of it.
 install: $(BIN)
-	install -D -m 0755 $(BIN) $(DESTDIR)$(PREFIX)/sbin/$(BIN)
 ifneq ($(INIT_SCRIPT),no)
-	@$(RUN) ./$(BIN) init-script - >/dev/null 2>&1 || { \
-		echo "$(BIN) does not run on this machine, so it cannot write its init script:"; \
+	@rm -f $(BIN).init $(BIN).init.raw
+	@{ $(RUN) ./$(BIN) init-script - >$(BIN).init.raw 2>/dev/null && \
+	   [ "$$(head -n 1 $(BIN).init.raw)" = "#!/bin/sh" ]; } || { \
+		rm -f $(BIN).init.raw; \
+		echo "$(BIN) could not run here to write its init script:"; \
 		echo "  make install RUN=qemu-<arch> ...   (run it under an emulator), or"; \
 		echo "  make install INIT_SCRIPT=no ...    (and run 'cerberus init-script' on the camera)"; \
 		exit 1; }
-	mkdir -p $(DESTDIR)/etc/init.d
-	$(RUN) ./$(BIN) init-script - | sed "s|^DAEMON=.*|DAEMON='$(PREFIX)/sbin/$(BIN)'|" >$(DESTDIR)/etc/init.d/S99cerberus
-	chmod 0755 $(DESTDIR)/etc/init.d/S99cerberus
+	sed "s|^DAEMON=.*|DAEMON='$(PREFIX)/sbin/$(BIN)'|" $(BIN).init.raw >$(BIN).init
+	rm -f $(BIN).init.raw
+endif
+	install -D -m 0755 $(BIN) $(DESTDIR)$(PREFIX)/sbin/$(BIN)
+ifneq ($(INIT_SCRIPT),no)
+	install -D -m 0755 $(BIN).init $(DESTDIR)/etc/init.d/.S99cerberus.new
+	mv -f $(DESTDIR)/etc/init.d/.S99cerberus.new $(DESTDIR)/etc/init.d/S99cerberus
+	rm -f $(BIN).init
 endif
 
 clean:
-	rm -f $(BIN)
+	rm -f $(BIN) $(BIN).init $(BIN).init.raw
 
 .PHONY: all size install clean

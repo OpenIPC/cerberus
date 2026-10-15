@@ -15,10 +15,16 @@ jobs:
     name: shellcheck
     runs-on: ubuntu-latest
     # The installers run under BusyBox ash on the camera, where nobody watches them fail. The init
-    # script is text inside the binary now, so the test suite shellchecks what `init-script` writes.
+    # script is text inside the binary now, so it is linted as the binary writes it: built here, on
+    # the runner, rather than left to the test image, where a missing shellcheck is only a skip.
+    # SC2155: `export X="$(fw_printenv ...)"` masking the exit status is the point — a key that is
+    # not set is simply empty.
     steps:
       - uses: actions/checkout@v4
       - run: shellcheck -S warning install.sh uninstall.sh ci/build.sh ci/assemble.sh tests/run.sh tests/suite.sh
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends libmbedtls-dev
+      - run: make -C src
+      - run: src/cerberus init-script - | shellcheck -S warning -e SC2155 -s sh -
 
   test:
     name: tests (${{ matrix.name }})
