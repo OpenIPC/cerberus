@@ -46,8 +46,11 @@ code — `cerberus: E13` — and the page that decodes it:
 To take it all off again:
 
 ```sh
-curl -fsSL https://github.com/OpenIPC/cerberus/releases/latest/download/uninstall.sh | sh
+curl -fsSL https://github.com/OpenIPC/cerberus/releases/latest/download/install.sh | sh -s -- --uninstall
 ```
+
+`uninstall.sh` from the same release still works and does exactly this — it is kept for commands
+printed before the two scripts became one.
 
 By hand, the same thing:
 
@@ -77,7 +80,8 @@ at all:
 | `cerberus-mipsel` | MIPS cameras — Ingenic T10, T20, T21, T31, T40, … |
 | `cerberus-aarch64` | 64-bit ARM |
 | `cerberus-x86_64` | VMs and test boxes |
-| `install.sh`, `uninstall.sh` | the installer and the uninstaller |
+| `install.sh` | the installer; `--uninstall` takes the agent off again |
+| `uninstall.sh` | the old address of `install.sh --uninstall`, kept for commands already printed |
 | `S99cerberus` | the BusyBox init script |
 | `SHA256SUMS` | checksums of all of the above; the installer verifies against it |
 | `LICENSE.md` | the license |
@@ -164,7 +168,7 @@ then keep working, with nothing to do:
   rolls back to, still finds a working camera;
 - `S99cerberus` reads `cerberus_<name>` and falls back to `streq_<name>`, so settings written by the
   old instructions still apply; `STREQ_*` variables are still accepted;
-- forgetting an enrolment (a revoked node), `cerberus clean` and `uninstall.sh` remove both names, so
+- forgetting an enrolment (a revoked node), `cerberus clean` and `install.sh --uninstall` remove both names, so
   an old copy can never bring a revoked node back;
 - once there is nothing left to copy, a start writes nothing to flash.
 

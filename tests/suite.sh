@@ -472,6 +472,13 @@ printf 'cerberus_ca=%s\n' "$T/ca.crt" >$INST
 inst() { env PATH="$T/fw:$PATH" FAKE_UBOOT=$INST CERBERUS_DIST=file://$REL CERBERUS_API=$URL/v1 \
 	CERBERUS_STORE= CERBERUS_IFACE= sh /src/install.sh "$@"; }
 
+# A flag it does not know is refused before anything happens: taken for a token, a mistyped
+# --uninstall would be written into the environment and enrolled with.
+inst --uninstal >inst-flag.log 2>&1
+check "an unknown flag is refused as E19" "$?" "19"
+check "before it installs anything" "$(yes_if test -e /usr/sbin/cerberus)$(yes_if test -e /etc/init.d/S99cerberus)" "nono"
+check "or writes anything" "$(grep -c -E '^(cerberus|streq)_(api|enrollment_token)=' $INST)" "0"
+
 inst >inst-notoken.log 2>&1
 check "no token: installs, exits 0" "$?" "0"
 check "picks the build for this CPU" "$(cmp -s /usr/sbin/cerberus $REL/cerberus-$ARCH && echo yes)" "yes"
@@ -502,9 +509,19 @@ check "the agent enrolled and the installer read its claim code" "$(yes_if grep 
 check "into the U-Boot environment" "$(ub $INST cerberus_node_id | grep -c '^node_')" "1"
 env PATH="$T/fw:$PATH" FAKE_UBOOT=$INST sh /etc/init.d/S99cerberus stop >/dev/null 2>&1
 
-env PATH="$T/fw:$PATH" FAKE_UBOOT=$INST sh /src/uninstall.sh >uninst.log 2>&1
-check "uninstall.sh removes it" "$(yes_if test -e /usr/sbin/cerberus)$(yes_if test -e /etc/init.d/S99cerberus)" "nono"
+inst --uninstall >uninst.log 2>&1
+check "install.sh --uninstall removes it" "$(yes_if test -e /usr/sbin/cerberus)$(yes_if test -e /etc/init.d/S99cerberus)" "nono"
 check "and every key it wrote" "$(grep -c -E '^(cerberus|streq)_' $INST)" "0"
+
+# uninstall.sh is only the old address of the same thing: it fetches install.sh from the release and
+# runs it with --uninstall, so a command printed long ago still works — old key names included.
+inst >/dev/null 2>&1
+printf 'cerberus_api=x\nstreq_node_id=node_old\nstreq_device_key=k\n' >>$INST
+env PATH="$T/fw:$PATH" FAKE_UBOOT=$INST CERBERUS_DIST=file://$REL sh /src/uninstall.sh >uninst-old.log 2>&1
+check "uninstall.sh still removes it" "$?$(yes_if test -e /usr/sbin/cerberus)$(yes_if test -e /etc/init.d/S99cerberus)" "0nono"
+check "and every key, either name" "$(grep -c -E '^(cerberus|streq)_' $INST)" "0"
+env PATH="$T/fw:$PATH" FAKE_UBOOT=$INST CERBERUS_DIST=file://$T/nowhere sh /src/uninstall.sh >uninst-nodist.log 2>&1
+check "uninstall.sh without the release says E14" "$?" "14"
 
 # ------------------------------------------------------------------ motion
 section "motion events"

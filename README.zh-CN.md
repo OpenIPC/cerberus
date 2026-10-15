@@ -41,8 +41,10 @@ curl -fsSL https://github.com/OpenIPC/cerberus/releases/latest/download/install.
 完全卸载：
 
 ```sh
-curl -fsSL https://github.com/OpenIPC/cerberus/releases/latest/download/uninstall.sh | sh
+curl -fsSL https://github.com/OpenIPC/cerberus/releases/latest/download/install.sh | sh -s -- --uninstall
 ```
+
+同一发布中的 `uninstall.sh` 仍然可用，效果完全相同——保留它是为了两个脚本合并之前已经给出的命令。
 
 手动安装，效果相同：
 
@@ -70,7 +72,8 @@ fw_setenv cerberus_enrollment_token tok_...
 | `cerberus-mipsel` | MIPS 摄像机——君正 T10、T20、T21、T31、T40…… |
 | `cerberus-aarch64` | 64 位 ARM |
 | `cerberus-x86_64` | 虚拟机和测试环境 |
-| `install.sh`、`uninstall.sh` | 安装和卸载脚本 |
+| `install.sh` | 安装脚本；加 `--uninstall` 则卸载 agent |
+| `uninstall.sh` | `install.sh --uninstall` 的旧地址，为已经给出的命令保留 |
 | `S99cerberus` | BusyBox 启动脚本 |
 | `SHA256SUMS` | 以上所有文件的校验和，安装脚本据此校验 |
 | `LICENSE.md` | 许可证 |
@@ -149,7 +152,7 @@ cerberus init-script [PATH|-]  # 写入启动本二进制文件的启动脚本 [
 - `streq_*` 副本**保留不动**，因此旧版 `S99cerberus` 或回退到的旧版二进制文件仍能找到一台可用的摄像机；
 - `S99cerberus` 读取 `cerberus_<名称>`，不存在时回退到 `streq_<名称>`，因此按旧说明写入的设置依然有效；
   `STREQ_*` 变量同样被接受；
-- 注销（节点被撤销）、`cerberus clean` 和 `uninstall.sh` 会同时删除两种名称，因此旧副本永远无法让已撤销的节点复活；
+- 注销（节点被撤销）、`cerberus clean` 和 `install.sh --uninstall` 会同时删除两种名称，因此旧副本永远无法让已撤销的节点复活；
 - 当没有需要复制的内容时，启动过程不会向闪存写入任何东西。
 
 ## 工作原理

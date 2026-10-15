@@ -44,8 +44,11 @@ curl -fsSL https://github.com/OpenIPC/cerberus/releases/latest/download/install.
 Снять всё обратно:
 
 ```sh
-curl -fsSL https://github.com/OpenIPC/cerberus/releases/latest/download/uninstall.sh | sh
+curl -fsSL https://github.com/OpenIPC/cerberus/releases/latest/download/install.sh | sh -s -- --uninstall
 ```
+
+`uninstall.sh` из того же релиза тоже работает и делает ровно это — он оставлен ради команд,
+напечатанных до того, как два скрипта стали одним.
 
 То же самое руками:
 
@@ -74,7 +77,8 @@ fw_setenv cerberus_enrollment_token tok_...
 | `cerberus-mipsel` | MIPS-камеры — Ingenic T10, T20, T21, T31, T40, … |
 | `cerberus-aarch64` | 64-битный ARM |
 | `cerberus-x86_64` | виртуалки и тестовые стенды |
-| `install.sh`, `uninstall.sh` | установщик и деинсталлятор |
+| `install.sh` | установщик; с `--uninstall` снимает агента обратно |
+| `uninstall.sh` | старый адрес `install.sh --uninstall`, оставлен ради уже напечатанных команд |
 | `S99cerberus` | init-скрипт BusyBox |
 | `SHA256SUMS` | контрольные суммы всего перечисленного; установщик сверяется с ними |
 | `LICENSE.md` | лицензия |
@@ -161,7 +165,7 @@ cerberus init-script [PATH|-]  # записать init-скрипт, запус�
   кто-то откатился, по-прежнему находят рабочую камеру;
 - `S99cerberus` читает `cerberus_<имя>`, а при его отсутствии — `streq_<имя>`, так что настройки по
   старым инструкциям действуют; переменные `STREQ_*` тоже принимаются;
-- сброс энролла (отозванный узел), `cerberus clean` и `uninstall.sh` стирают оба имени, поэтому
+- сброс энролла (отозванный узел), `cerberus clean` и `install.sh --uninstall` стирают оба имени, поэтому
   старая копия не может воскресить отозванный узел;
 - когда копировать больше нечего, старт не пишет во флеш ничего.
 

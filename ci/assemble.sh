@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Lays a release out next to the binaries ci/build.sh left in $OUT: the installer and the uninstaller,
-# the init script, the license, and SHA256SUMS over everything a camera downloads. The installer reads
-# the sums from the same release, so a binary and the sum it is checked against always travel together.
+# Lays a release out next to the binaries ci/build.sh left in $OUT: the installer (which also uninstalls),
+# the uninstaller kept as its old address, the init script, the license, and SHA256SUMS over everything
+# a camera downloads. The installer reads the sums from the same release, so a binary and the sum it
+# is checked against always travel together.
 #
 # Usage: ci/assemble.sh            (OUT=dist by default)
 set -euo pipefail
