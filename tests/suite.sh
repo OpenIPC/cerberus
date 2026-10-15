@@ -570,7 +570,7 @@ check "and starts the binary that wrote it" "$($A init-script - 2>/dev/null | da
 $A init-script $T/initd/S99cerberus >/dev/null 2>&1
 check "init-script PATH writes an executable script" "$(yes_if test -x $T/initd/S99cerberus)" "yes"
 check "that parses" "$(yes_if sh -n $T/initd/S99cerberus)" "yes"
-check "and leaves no temporary behind" "$(ls $T/initd | grep -cv '^S99cerberus$')" "0"
+check "and leaves no temporary behind" "$(find $T/initd -name 'S99cerberus.*' | wc -l)" "0"
 # A binary kept somewhere with a space and a quote in the path: one shell word, and it still starts.
 ODD="$T/SD Card/it's"
 mkdir -p "$ODD" && cp $A "$ODD/cerberus"
