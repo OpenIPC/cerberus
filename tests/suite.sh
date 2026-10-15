@@ -562,6 +562,15 @@ for s in install.sh uninstall.sh; do
 	check "$s carries no comments" "$(tail -n +2 /src/$s | grep -c '^[[:space:]]*#')" "0"
 done
 
+# The binary carries the init script; while src/S99cerberus is still shipped the two must be one text.
+check "init-script is src/S99cerberus" \
+	"$($A init-script - 2>/dev/null | sed 's|^DAEMON=.*|DAEMON=/usr/sbin/cerberus|' | cmp -s - /src/src/S99cerberus && echo yes || echo no)" "yes"
+check "and starts the binary that wrote it" "$($A init-script - 2>/dev/null | sed -n 's/^DAEMON=//p')" "$A"
+$A init-script $T/initd/S99cerberus >/dev/null 2>&1
+check "init-script PATH writes an executable script" "$(yes_if test -x $T/initd/S99cerberus)" "yes"
+check "that parses" "$(yes_if sh -n $T/initd/S99cerberus)" "yes"
+check "and leaves no temporary behind" "$(yes_if test -e $T/initd/S99cerberus.new)" "no"
+
 echo
 echo "$PASS passed, $FAIL failed, $SKIP skipped"
 [ "$FAIL" -eq 0 ]

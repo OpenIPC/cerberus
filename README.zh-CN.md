@@ -135,6 +135,7 @@ cerberus keygen    # 打印密钥对（stdout 为数据，诊断信息输出到 
 cerberus clean     # 移除代理：接口、启动脚本、已保存的材料以及二进制文件本身
 cerberus motion    # 像 majestic 的钩子一样，通知正在运行的代理“有移动”
 cerberus snapshot  # 从 CERBERUS_SNAPSHOT_URL 取一帧到 /tmp/cerberus-snapshot.jpg
+cerberus init-script [PATH|-]  # 写入启动本二进制文件的启动脚本 [/etc/init.d/S99cerberus]
 ```
 
 ### 以前的 `streq_*`
