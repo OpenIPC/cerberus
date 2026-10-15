@@ -87,7 +87,7 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq >/dev/null
 apt-get install -y -qq --no-install-recommends ca-certificates curl xz-utils bzip2 make file \
-	qemu-user-static wireguard-tools >/dev/null
+	qemu-user-static wireguard-tools openssl >/dev/null
 
 fetch() { # fetch <url> <sha256> <file in /cache>
 	if [ ! -f "/cache/$3" ] || ! echo "$2  /cache/$3" | sha256sum -c --quiet - 2>/dev/null; then
@@ -114,6 +114,45 @@ tar -xjf "/cache/mbedtls-$MBEDTLS_VERSION.tar.bz2" -C /build/mbedtls --strip-com
 cfg=/build/mbedtls/include/mbedtls/mbedtls_config.h
 sed -i 's|^//#define MBEDTLS_PSA_CRYPTO_EXTERNAL_RNG$|#define MBEDTLS_PSA_CRYPTO_EXTERNAL_RNG|' "$cfg"
 grep -q '^#define MBEDTLS_PSA_CRYPTO_EXTERNAL_RNG$' "$cfg"
+
+# Everything the agent never uses, out: with the default configuration mbedTLS was most of the binary,
+# kept alive by the cipher-suite tables whether a suite could ever be picked or not. What stays is
+# what a TLS 1.2/1.3 *client* needs against a public CA — the coordinator is Let's Encrypt (ECDSA
+# P-256 leaf, P-384 intermediates, an RSA root behind the X1 cross-sign), other CAs are RSA or
+# ECDSA too: ECDHE-ECDSA/ECDHE-RSA, AES-GCM, SHA-256/384 (and SHA-1/512 for older chains), P-256,
+# P-384 and X25519 (the device key and a TLS group), RSA and ECDSA verification, PEM and X.509
+# parsing. A name below that this mbedTLS does not know fails the build: a rename upstream must not
+# quietly put something back.
+for o in \
+	MBEDTLS_SSL_SRV_C MBEDTLS_SSL_PROTO_DTLS MBEDTLS_SSL_DTLS_ANTI_REPLAY MBEDTLS_SSL_DTLS_HELLO_VERIFY \
+	MBEDTLS_SSL_DTLS_CLIENT_PORT_REUSE MBEDTLS_SSL_DTLS_CONNECTION_ID MBEDTLS_SSL_DTLS_SRTP \
+	MBEDTLS_SSL_COOKIE_C MBEDTLS_SSL_CACHE_C MBEDTLS_SSL_TICKET_C MBEDTLS_SSL_SESSION_TICKETS \
+	MBEDTLS_SSL_EARLY_DATA MBEDTLS_SSL_RENEGOTIATION MBEDTLS_SSL_CONTEXT_SERIALIZATION MBEDTLS_SSL_ALPN \
+	MBEDTLS_KEY_EXCHANGE_PSK_ENABLED MBEDTLS_KEY_EXCHANGE_DHE_PSK_ENABLED MBEDTLS_KEY_EXCHANGE_RSA_PSK_ENABLED \
+	MBEDTLS_KEY_EXCHANGE_ECDHE_PSK_ENABLED MBEDTLS_KEY_EXCHANGE_RSA_ENABLED MBEDTLS_KEY_EXCHANGE_DHE_RSA_ENABLED \
+	MBEDTLS_KEY_EXCHANGE_ECDH_ECDSA_ENABLED MBEDTLS_KEY_EXCHANGE_ECDH_RSA_ENABLED MBEDTLS_KEY_EXCHANGE_ECJPAKE_ENABLED \
+	MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_PSK_ENABLED MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_PSK_EPHEMERAL_ENABLED \
+	MBEDTLS_DES_C MBEDTLS_CAMELLIA_C MBEDTLS_ARIA_C MBEDTLS_CCM_C MBEDTLS_CMAC_C MBEDTLS_NIST_KW_C \
+	MBEDTLS_CHACHAPOLY_C MBEDTLS_CHACHA20_C MBEDTLS_POLY1305_C \
+	MBEDTLS_CIPHER_MODE_CBC MBEDTLS_CIPHER_MODE_CFB MBEDTLS_CIPHER_MODE_CTR MBEDTLS_CIPHER_MODE_OFB \
+	MBEDTLS_CIPHER_MODE_XTS MBEDTLS_CIPHER_PADDING_PKCS7 MBEDTLS_CIPHER_PADDING_ONE_AND_ZEROS \
+	MBEDTLS_CIPHER_PADDING_ZEROS_AND_LEN MBEDTLS_CIPHER_PADDING_ZEROS \
+	MBEDTLS_MD5_C MBEDTLS_RIPEMD160_C MBEDTLS_SHA3_C MBEDTLS_DHM_C MBEDTLS_ECJPAKE_C MBEDTLS_LMS_C \
+	MBEDTLS_HMAC_DRBG_C MBEDTLS_ECDSA_DETERMINISTIC MBEDTLS_GENPRIME \
+	MBEDTLS_ECP_DP_SECP192R1_ENABLED MBEDTLS_ECP_DP_SECP224R1_ENABLED MBEDTLS_ECP_DP_SECP521R1_ENABLED \
+	MBEDTLS_ECP_DP_SECP192K1_ENABLED MBEDTLS_ECP_DP_SECP224K1_ENABLED MBEDTLS_ECP_DP_SECP256K1_ENABLED \
+	MBEDTLS_ECP_DP_BP256R1_ENABLED MBEDTLS_ECP_DP_BP384R1_ENABLED MBEDTLS_ECP_DP_BP512R1_ENABLED \
+	MBEDTLS_ECP_DP_CURVE448_ENABLED MBEDTLS_PK_PARSE_EC_EXTENDED MBEDTLS_PK_PARSE_EC_COMPRESSED \
+	MBEDTLS_PKCS5_C MBEDTLS_PKCS7_C MBEDTLS_PKCS12_C MBEDTLS_PK_WRITE_C MBEDTLS_PEM_WRITE_C \
+	MBEDTLS_X509_CREATE_C MBEDTLS_X509_CRT_WRITE_C MBEDTLS_X509_CSR_WRITE_C MBEDTLS_X509_CSR_PARSE_C \
+	MBEDTLS_X509_CRL_PARSE_C \
+	MBEDTLS_PSA_CRYPTO_STORAGE_C MBEDTLS_PSA_ITS_FILE_C \
+	MBEDTLS_ERROR_C MBEDTLS_VERSION_FEATURES MBEDTLS_SELF_TEST MBEDTLS_DEBUG_C MBEDTLS_TIMING_C
+do
+	grep -q "define $o\$" "$cfg" || { echo "mbedTLS $MBEDTLS_VERSION has no $o"; exit 1; }
+	sed -i "s|^#define $o\$|//#define $o|" "$cfg"
+done
+
 make -s -C /build/mbedtls/library static CC="$CC" AR="${CROSS}ar" \
 	CFLAGS="-Os -ffunction-sections -fdata-sections" >/dev/null
 cp /build/mbedtls/library/*.a /build/prefix/lib/
@@ -130,12 +169,52 @@ file cerberus | grep -q "$WANT"
 file cerberus | grep -q "statically linked"
 
 # ...and so is a binary that is the right machine and still cannot run. Run it.
-run() { if [ -n "$QEMU" ]; then "$QEMU" ./cerberus "$@"; else ./cerberus "$@"; fi; }
+run() { if [ -n "$QEMU" ]; then "$QEMU" /build/cerberus "$@"; else /build/cerberus "$@"; fi; }
 run --help 2>&1 | head -1
 CERBERUS_STORE=file:/tmp/smoke.env run keygen >/tmp/keys 2>/dev/null
 [ "$(sed -n 1p /tmp/keys | wg pubkey)" = "$(sed -n 2p /tmp/keys)" ] \
 	|| { echo "the X25519 key this binary derives is not the one WireGuard derives"; exit 1; }
 echo "keygen on $ARCH matches wg pubkey"
+
+# ...and TLS, against what the configuration above has to keep: TLS 1.3 and 1.2, ECDSA and RSA
+# servers (RSA under TLS 1.3 signs with RSA-PSS — the option that is easiest to trim by mistake),
+# a chain from an RSA root through an ECDSA intermediate as Let's Encrypt's is, and a server from
+# another CA, which must be refused. Local servers only: a release build does not depend on the net.
+cd /tmp
+ossl() { openssl "$@" >/dev/null 2>&1; }
+ossl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 -subj /CN=ca -keyout ca.key -out ca.crt
+ossl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 -subj /CN=rogue -keyout rogue.key -out rogue.crt
+ossl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=rsa-root -keyout rroot.key -out rroot.crt
+printf 'subjectAltName=DNS:localhost\n' >leaf.ext
+printf 'basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign\n' >inter.ext
+leaf() { # leaf <name> <issuer> <ext> <newkey args...>
+	n=$1 i=$2 e=$3; shift 3
+	ossl req -newkey "$@" -nodes -subj "/CN=$n" -keyout "$n.key" -out "$n.csr"
+	ossl x509 -req -in "$n.csr" -CA "$i.crt" -CAkey "$i.key" -CAcreateserial -days 1 -extfile "$e" -out "$n.crt"
+}
+leaf ec ca leaf.ext ec -pkeyopt ec_paramgen_curve:prime256v1
+leaf rsa ca leaf.ext rsa:2048
+leaf inter rroot inter.ext ec -pkeyopt ec_paramgen_curve:secp384r1
+leaf chain inter leaf.ext ec -pkeyopt ec_paramgen_curve:prime256v1
+port=8440
+tls() { # tls <label> <want ok|refused> <ca> <cert> <s_server args...>
+	label=$1 want=$2 ca=$3 cert=$4; shift 4
+	port=$((port + 1))
+	openssl s_server -quiet -www -accept $port -cert "$cert.crt" -key "$cert.key" "$@" >/dev/null 2>&1 &
+	srv=$!
+	sleep 0.5
+	out=$(CERBERUS_CA=/tmp/$ca.crt CERBERUS_SNAPSHOT_URL=https://localhost:$port/ run snapshot 2>&1 || true)
+	case "$out" in *"TLS ok"*) got=ok ;; *) got=refused ;; esac
+	kill $srv 2>/dev/null || true
+	[ "$got" = "$want" ] || { echo "TLS on $ARCH: $label — $got, want $want"; echo "$out"; exit 1; }
+	echo "TLS on $ARCH: $label — $got"
+}
+tls "1.3, ECDSA P-256"                 ok      ca    ec    -tls1_3
+tls "1.3, RSA (RSA-PSS)"               ok      ca    rsa   -tls1_3
+tls "1.2, ECDHE-RSA"                   ok      ca    rsa   -tls1_2
+tls "RSA root, ECDSA intermediate"     ok      rroot chain -cert_chain inter.crt
+tls "a certificate from another CA"    refused rogue ec
+cd /build
 
 cp cerberus "/out/cerberus-$ARCH"
 BUILD

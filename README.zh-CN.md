@@ -79,12 +79,12 @@ fw_setenv cerberus_enrollment_token tok_...
 
 | 二进制文件 | 字节 |
 |---|---|
-| `cerberus-arm` | 570 564 |
-| `cerberus-mipsel` | 660 900 |
-| `cerberus-aarch64` | 587 320 |
-| `cerberus-x86_64` | 575 144 |
+| `cerberus-arm` | 304 300 |
+| `cerberus-mipsel` | 397 772 |
+| `cerberus-aarch64` | 329 240 |
+| `cerberus-x86_64` | 312 904 |
 
-其中绝大部分是默认配置的 mbedTLS，代理本身只有约 30 KB。
+其中大部分是只保留 TLS 客户端所需功能的 mbedTLS（`ci/build.sh` 列出了关闭的选项，并在每次构建时用本地服务器检查 TLS），代理本身只有约 30 KB。
 
 ## 摄像机需要具备
 

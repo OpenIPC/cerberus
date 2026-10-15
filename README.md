@@ -87,12 +87,13 @@ current release.
 
 | binary | bytes |
 |---|---|
-| `cerberus-arm` | 570 564 |
-| `cerberus-mipsel` | 660 900 |
-| `cerberus-aarch64` | 587 320 |
-| `cerberus-x86_64` | 575 144 |
+| `cerberus-arm` | 304 300 |
+| `cerberus-mipsel` | 397 772 |
+| `cerberus-aarch64` | 329 240 |
+| `cerberus-x86_64` | 312 904 |
 
-Almost all of that is mbedTLS built with its default configuration; the agent itself is ~30 KB.
+Most of that is mbedTLS, built with only what a TLS client needs (`ci/build.sh` lists what is left
+out, and checks TLS against local servers on every build); the agent itself is ~30 KB.
 
 ## What the camera needs
 
