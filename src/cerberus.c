@@ -161,7 +161,7 @@ struct cfg {
 
 static struct cfg g_cfg;
 
-/* CERBERUS_<name>, then the name this agent had before it was renamed — CERBERUS_<name> — so a script or an
+/* CERBERUS_<name>, then the name this agent had before it was renamed — STREQ_<name> — so a script or an
  * init file written for the old name keeps working. */
 static const char *cfg_env(const char *name, const char *fallback)
 {
@@ -938,6 +938,23 @@ static int url_split(const char *url, int *tls, char *host, size_t host_sz,
     return 0;
 }
 
+/* Whether url_split() will take this address and find a host in it: http(s)://, then an authority
+ * whose host part — after any user:pass@, before any :port — is not empty. "http://" alone or
+ * "http://user@/x" would only fail later, one connection warning per request. */
+static int url_ok(const char *url)
+{
+    const char *p, *end, *at;
+
+    if (!strncmp(url, "https://", 8)) p = url + 8;
+    else if (!strncmp(url, "http://", 7)) p = url + 7;
+    else return 0;
+
+    end = p + strcspn(p, "/");
+    at = memchr(p, '@', (size_t)(end - p));   /* the first '@', as url_split takes it */
+    if (at) p = at + 1;
+    return p < end && *p != ':';
+}
+
 /* Case-insensitive search inside the response head only — never into a JPEG body. */
 static const char *head_find(const char *head, size_t head_len, const char *needle)
 {
@@ -1000,10 +1017,14 @@ static long http_do(const struct http_req *rq, unsigned char *resp, size_t resp_
     long body_len;
     int rc, n, overflow = 0, chunked;
 
+    /* Not die(): this runs inside watch() too, for majestic's frame, and a typo in an optional
+     * setting must not take the whole agent down with it — init would never bring it back. */
     memset(&c, 0, sizeof c);
     if (url_split(rq->url, &c.tls, host, sizeof host, port, sizeof port, path, sizeof path,
-                  auth, sizeof auth) != 0)
-        die("unsupported URL: %s", rq->url);
+                  auth, sizeof auth) != 0) {
+        warn_("unsupported URL (want http:// or https://): %s", rq->url);
+        return -1;
+    }
 
     mbedtls_net_init(&c.net);
     if ((rc = mbedtls_net_connect(&c.net, host, port, MBEDTLS_NET_PROTO_TCP)) != 0) {
@@ -1159,6 +1180,31 @@ static int json_str(const char *json, const char *key, char *out, size_t out_sz)
     return 1;
 }
 
+/*
+ * Appends `in` to the JSON text being built in out[0..*n], escaped as the inside of a string literal
+ * when `esc` is set: `"` and `\` escaped, control characters as \u00XX. Hostnames are typed by people
+ * and may hold either. What does not fit is a configuration error — sent cut off it would only come
+ * back as a refused enrolment, forever. The limit is the request, not any one field.
+ */
+static void json_put(char *out, size_t out_sz, size_t *n, const char *in, int esc)
+{
+    size_t len;
+    char e[8];
+
+    for (; *in; in++) {
+        unsigned char ch = (unsigned char)*in;
+        if (esc && (ch == '"' || ch == '\\')) { e[0] = '\\'; e[1] = (char)ch; len = 2; }
+        else if (esc && ch < 0x20) { snprintf(e, sizeof e, "\\u%04x", ch); len = 6; }
+        else { e[0] = (char)ch; len = 1; }
+        if (*n + len + 1 > out_sz)
+            die("the enrolment request does not fit in %u bytes — a shorter CERBERUS_HOSTNAME?",
+                (unsigned)out_sz);
+        memcpy(out + *n, e, len);
+        *n += len;
+    }
+    out[*n] = 0;
+}
+
 /* ------------------------------------------------------------------ device */
 
 /*
@@ -1253,8 +1299,9 @@ static void claim_code_get(char *code, size_t code_sz)
 static int enroll(void)
 {
     char priv_b64[64], pub_b64[64], code[16], hash[65];
-    char url[512], body[1024], resp[8192];
+    char url[512], body[2048], resp[8192];
     char node[128], ip[64], ep[256], hubkey[64], allowed[80], subnet[64], hubip[64];
+    size_t n = 0;
     int status = 0;
 
     if (store_get("cerberus_node_id", node, sizeof node)) {
@@ -1274,16 +1321,19 @@ static int enroll(void)
     /* agentVersion — U0. Обновлять себя эта камера не умеет (rootfs только для чтения, путь
      * обновления — прошивка), поэтому облако ей не апдейтер, а термометр: пусть владелец видит, что
      * на камере агент позапрошлого года, раньше, чем это выяснится другим способом. */
-    if (g_cfg.hostname)
-        snprintf(body, sizeof body,
-                 "{\"enrollmentToken\":\"%s\",\"devicePublicKey\":\"%s\",\"kind\":\"%s\","
-                 "\"hostname\":\"%s\",\"claimCodeHash\":\"%s\",\"agentVersion\":\"%s\"}",
-                 g_cfg.token, pub_b64, g_cfg.kind, g_cfg.hostname, hash, CERBERUS_VERSION);
-    else
-        snprintf(body, sizeof body,
-                 "{\"enrollmentToken\":\"%s\",\"devicePublicKey\":\"%s\",\"kind\":\"%s\","
-                 "\"claimCodeHash\":\"%s\",\"agentVersion\":\"%s\"}",
-                 g_cfg.token, pub_b64, g_cfg.kind, hash, CERBERUS_VERSION);
+    json_put(body, sizeof body, &n, "{\"enrollmentToken\":\"", 0);
+    json_put(body, sizeof body, &n, g_cfg.token, 1);
+    json_put(body, sizeof body, &n, "\",\"devicePublicKey\":\"", 0);
+    json_put(body, sizeof body, &n, pub_b64, 0);
+    json_put(body, sizeof body, &n, "\",\"kind\":\"", 0);
+    json_put(body, sizeof body, &n, g_cfg.kind, 1);
+    if (g_cfg.hostname) {
+        json_put(body, sizeof body, &n, "\",\"hostname\":\"", 0);
+        json_put(body, sizeof body, &n, g_cfg.hostname, 1);
+    }
+    json_put(body, sizeof body, &n, "\",\"claimCodeHash\":\"", 0);
+    json_put(body, sizeof body, &n, hash, 0);
+    json_put(body, sizeof body, &n, "\",\"agentVersion\":\"" CERBERUS_VERSION "\"}", 0);
 
     note("enrolling at %s as %s", url, pub_b64);
     if (http_post_json(url, body, resp, sizeof resp, &status) != 0)
@@ -1464,7 +1514,6 @@ static const char *ping_target(void)
     unsigned long net;
 
     if (*g_cfg.ping_target) return g_cfg.ping_target;
-    if (target[0]) return target;
 
     /* Координатор назвал адрес хаба — пингуем его, а не вывод из подсети: у арендатора хаб вообще
      * не в его диапазоне. */
@@ -1473,7 +1522,10 @@ static const char *ping_target(void)
         return target;
     }
 
-    if (sscanf(g_cfg.subnet, "%u.%u.%u.%u/%d", &a, &b, &c, &d, &prefix) < 4)
+    /* The subnet the interface is actually in (node_subnet(), as link_apply uses), and derived anew
+     * every time: a directive may rotate it, and a probe left pinging the old network would rebuild
+     * and restart a tunnel that is fine. */
+    if (sscanf(node_subnet(), "%u.%u.%u.%u/%d", &a, &b, &c, &d, &prefix) < 4)
         return "";
     if (prefix <= 0 || prefix > 30) prefix = 16;
 
@@ -1644,6 +1696,12 @@ static long snapshot_take(void)
     int status = 0;
     long n;
 
+    if (!url_ok(g_cfg.snapshot_url)) {
+        if (complaints++ < 3)
+            warn_("CERBERUS_SNAPSHOT_URL is not an http(s) URL (%s) — motion goes out without frames",
+                  g_cfg.snapshot_url);
+        return -1;
+    }
     if (!g_frame && !(g_frame = malloc((size_t)g_cfg.snapshot_max + 1)))
         return -1;
     rq.url = g_cfg.snapshot_url;
@@ -2504,6 +2562,9 @@ static void usage(void)
         "  CERBERUS_STORE              auto | uboot | file:/path  [auto] — holds the device key too\n"
         "  CERBERUS_KEYFILE            legacy key file, migrated into the store  [/etc/streq/wg.key]\n"
         "  CERBERUS_HEARTBEAT          seconds between heartbeats; 0 disables  [20]\n"
+        "  CERBERUS_STALE_AFTER        seconds without a handshake before the peer is re-poked  [180]\n"
+        "  CERBERUS_RETRY_MIN          first pause before a failed enrolment is retried  [5]\n"
+        "  CERBERUS_RETRY_MAX          ceiling that pause doubles up to  [300]\n"
         "  CERBERUS_PING_TARGET        in-tunnel probe target  [the hub]\n"
         "  CERBERUS_PING_INTERVAL      seconds between probes; 0 disables  [60]\n"
         "  CERBERUS_PING_TIMEOUT       seconds one probe waits  [3]\n"
@@ -2513,6 +2574,7 @@ static void usage(void)
         "                              [http://127.0.0.1/image.jpg?width=640&height=360]\n"
         "  CERBERUS_MOTION_HOOK        the script majestic runs on motion  [/usr/sbin/motion.sh]\n"
         "  CERBERUS_MOTION_QUIET       seconds without motion that end an episode  [10]\n"
+        "  CERBERUS_MOTION_MAX         an episode is cut after this many seconds  [600]\n"
         "  CERBERUS_PIDFILE            where the hook finds the agent  [/var/run/cerberus.pid]\n"
         "  CERBERUS_SEED               randomness kept between starts  [/etc/cerberus/seed]\n"
         "  CERBERUS_RANDOM_DEV         the kernel's random device  [/dev/urandom]\n"
@@ -2546,6 +2608,9 @@ int main(int argc, char **argv)
     if (!strcmp(cmd, "snapshot")) return cmd_snapshot();
     if (!strcmp(cmd, "init-script")) return cmd_init_script(argc > 2 ? argv[2] : INIT_SCRIPT);
     if (!strcmp(cmd, "run")) {
+        /* A configuration error, so it dies here and now — not as an enrolment retried forever. */
+        if (!url_ok(g_cfg.api))
+            die("CERBERUS_API is not an http(s) URL: %s", g_cfg.api);
         catch_signals();
         /* Ненулевой ответ здесь бывает ровно один: попросили остановиться. Это не отказ. */
         if (enroll_with_retry() != 0) {

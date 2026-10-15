@@ -134,7 +134,8 @@ Variables only the agent reads: `CERBERUS_STORE` (`auto` \| `uboot` \| `file:/pa
 `CERBERUS_RETRY_MIN` / `CERBERUS_RETRY_MAX` (`5` / `300`, enrolment backoff), `CERBERUS_INSECURE=1`
 (skip TLS verification, debugging only), `CERBERUS_DRY_RUN=1` (print the `ip`/`wg` commands instead
 of running them), `CERBERUS_MOTION_HOOK` (`/usr/sbin/motion.sh`), `CERBERUS_MOTION_QUIET` (`10`,
-seconds without motion that end an episode), `CERBERUS_PIDFILE` (`/var/run/cerberus.pid`),
+seconds without motion that end an episode), `CERBERUS_MOTION_MAX` (`600`, an episode is cut after
+this many seconds, whatever happens), `CERBERUS_PIDFILE` (`/var/run/cerberus.pid`),
 `CERBERUS_SEED` (`/etc/cerberus/seed`, randomness kept between starts so that a start never waits
 on the kernel), `CERBERUS_RANDOM_DEV` (`/dev/urandom`), `CERBERUS_GETRANDOM=0` (do not ask
 getrandom(2) first).
