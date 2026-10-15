@@ -938,10 +938,21 @@ static int url_split(const char *url, int *tls, char *host, size_t host_sz,
     return 0;
 }
 
-/* Whether url_split() will take this address. */
+/* Whether url_split() will take this address and find a host in it: http(s)://, then an authority
+ * whose host part — after any user:pass@, before any :port — is not empty. "http://" alone or
+ * "http://user@/x" would only fail later, one connection warning per request. */
 static int url_ok(const char *url)
 {
-    return !strncmp(url, "https://", 8) || !strncmp(url, "http://", 7);
+    const char *p, *end, *at;
+
+    if (!strncmp(url, "https://", 8)) p = url + 8;
+    else if (!strncmp(url, "http://", 7)) p = url + 7;
+    else return 0;
+
+    end = p + strcspn(p, "/");
+    at = memchr(p, '@', (size_t)(end - p));   /* the first '@', as url_split takes it */
+    if (at) p = at + 1;
+    return p < end && *p != ':';
 }
 
 /* Case-insensitive search inside the response head only — never into a JPEG body. */
@@ -1170,27 +1181,28 @@ static int json_str(const char *json, const char *key, char *out, size_t out_sz)
 }
 
 /*
- * A configured string as the inside of a JSON string literal: `"` and `\` escaped, control characters
- * as \u00XX. Hostnames are typed by people and may hold either. One that does not fit is a
- * configuration error — sent cut off it would only come back as a refused enrolment, forever.
+ * Appends `in` to the JSON text being built in out[0..*n], escaped as the inside of a string literal
+ * when `esc` is set: `"` and `\` escaped, control characters as \u00XX. Hostnames are typed by people
+ * and may hold either. What does not fit is a configuration error — sent cut off it would only come
+ * back as a refused enrolment, forever. The limit is the request, not any one field.
  */
-static const char *json_esc(const char *what, const char *in, char *out, size_t out_sz)
+static void json_put(char *out, size_t out_sz, size_t *n, const char *in, int esc)
 {
-    size_t n = 0, len;
+    size_t len;
     char e[8];
 
     for (; *in; in++) {
         unsigned char ch = (unsigned char)*in;
-        if (ch == '"' || ch == '\\') { e[0] = '\\'; e[1] = (char)ch; len = 2; }
-        else if (ch < 0x20) { snprintf(e, sizeof e, "\\u%04x", ch); len = 6; }
+        if (esc && (ch == '"' || ch == '\\')) { e[0] = '\\'; e[1] = (char)ch; len = 2; }
+        else if (esc && ch < 0x20) { snprintf(e, sizeof e, "\\u%04x", ch); len = 6; }
         else { e[0] = (char)ch; len = 1; }
-        if (n + len + 1 > out_sz)
-            die("%s is too long for the enrolment request", what);
-        memcpy(out + n, e, len);
-        n += len;
+        if (*n + len + 1 > out_sz)
+            die("the enrolment request does not fit in %u bytes — a shorter CERBERUS_HOSTNAME?",
+                (unsigned)out_sz);
+        memcpy(out + *n, e, len);
+        *n += len;
     }
-    out[n] = 0;
-    return out;
+    out[*n] = 0;
 }
 
 /* ------------------------------------------------------------------ device */
@@ -1289,8 +1301,8 @@ static int enroll(void)
     char priv_b64[64], pub_b64[64], code[16], hash[65];
     char url[512], body[2048], resp[8192];
     char node[128], ip[64], ep[256], hubkey[64], allowed[80], subnet[64], hubip[64];
-    char tok[512], kind[128], host[768];
-    int status = 0, n;
+    size_t n = 0;
+    int status = 0;
 
     if (store_get("cerberus_node_id", node, sizeof node)) {
         store_get("cerberus_overlay_ip", ip, sizeof ip);
@@ -1309,21 +1321,19 @@ static int enroll(void)
     /* agentVersion — U0. Обновлять себя эта камера не умеет (rootfs только для чтения, путь
      * обновления — прошивка), поэтому облако ей не апдейтер, а термометр: пусть владелец видит, что
      * на камере агент позапрошлого года, раньше, чем это выяснится другим способом. */
-    json_esc("CERBERUS_ENROLLMENT_TOKEN", g_cfg.token, tok, sizeof tok);
-    json_esc("CERBERUS_KIND", g_cfg.kind, kind, sizeof kind);
-    if (g_cfg.hostname)
-        n = snprintf(body, sizeof body,
-                     "{\"enrollmentToken\":\"%s\",\"devicePublicKey\":\"%s\",\"kind\":\"%s\","
-                     "\"hostname\":\"%s\",\"claimCodeHash\":\"%s\",\"agentVersion\":\"%s\"}",
-                     tok, pub_b64, kind, json_esc("CERBERUS_HOSTNAME", g_cfg.hostname, host, sizeof host),
-                     hash, CERBERUS_VERSION);
-    else
-        n = snprintf(body, sizeof body,
-                     "{\"enrollmentToken\":\"%s\",\"devicePublicKey\":\"%s\",\"kind\":\"%s\","
-                     "\"claimCodeHash\":\"%s\",\"agentVersion\":\"%s\"}",
-                     tok, pub_b64, kind, hash, CERBERUS_VERSION);
-    if (n <= 0 || (size_t)n >= sizeof body)
-        die("the enrolment request does not fit in %u bytes", (unsigned)sizeof body);
+    json_put(body, sizeof body, &n, "{\"enrollmentToken\":\"", 0);
+    json_put(body, sizeof body, &n, g_cfg.token, 1);
+    json_put(body, sizeof body, &n, "\",\"devicePublicKey\":\"", 0);
+    json_put(body, sizeof body, &n, pub_b64, 0);
+    json_put(body, sizeof body, &n, "\",\"kind\":\"", 0);
+    json_put(body, sizeof body, &n, g_cfg.kind, 1);
+    if (g_cfg.hostname) {
+        json_put(body, sizeof body, &n, "\",\"hostname\":\"", 0);
+        json_put(body, sizeof body, &n, g_cfg.hostname, 1);
+    }
+    json_put(body, sizeof body, &n, "\",\"claimCodeHash\":\"", 0);
+    json_put(body, sizeof body, &n, hash, 0);
+    json_put(body, sizeof body, &n, "\",\"agentVersion\":\"" CERBERUS_VERSION "\"}", 0);
 
     note("enrolling at %s as %s", url, pub_b64);
     if (http_post_json(url, body, resp, sizeof resp, &status) != 0)
