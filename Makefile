@@ -1,62 +1,27 @@
-# cerberus — on-camera agent. mbedTLS is the only dependency; everything else is libc.
+# The agent lives in src/ — its source, its Makefile and its init script — and that directory is
+# what a firmware build points at (`make -C src`). This one only forwards to it, so `make`,
+# `make STATIC=1`, `make install DESTDIR=...` work from the root as they always did. Variables given
+# on the command line reach src/Makefile on their own; the ones that are paths are made absolute
+# first, since src/Makefile runs one directory down. PREFIX only without DESTDIR: under DESTDIR it is
+# a path inside the staging tree (/usr), and stays as given.
 #
-# Native build:      make
-# Static binary:     make STATIC=1
-# Cross (OpenIPC):   make CC=arm-openipc-linux-musleabi-gcc MBEDTLS=/path/to/staging STATIC=1
-# Release version:   make VERSION=1.2.0      (otherwise the version in main.c)
-# Tests:             make test               (needs Docker; see tests/run.sh)
-#
-# MBEDTLS points at a prefix holding include/mbedtls and lib/libmbed*. Leave it empty when the
-# toolchain already sees them (a distro's mbedtls-dev, or a Buildroot sysroot).
+# Each goal is a make of its own one level down, so `make -j all install` would build and strip
+# src/cerberus twice at once while install copies it: the goals here run one after another (the
+# work inside src/ is still parallel).
+.NOTPARALLEL:
 
-CC      ?= cc
-STRIP   ?= strip
-DESTDIR ?=
-PREFIX  ?= /usr
-MBEDTLS ?=
-VERSION ?=
+FORWARD = $(if $(DESTDIR),DESTDIR=$(abspath $(DESTDIR)),$(if $(filter command line,$(origin PREFIX)),PREFIX=$(abspath $(PREFIX)))) \
+          $(if $(MBEDTLS),MBEDTLS=$(abspath $(MBEDTLS)))
 
-CFLAGS  ?= -Os -std=c99 -Wall -Wextra -ffunction-sections -fdata-sections
-LDFLAGS ?= -Wl,--gc-sections
-LIBS     = -lmbedtls -lmbedx509 -lmbedcrypto
+all install size:
+	$(MAKE) -C src $@ $(FORWARD)
 
-# CI adds -Werror here without having to restate the defaults above.
-CFLAGS  += $(EXTRA_CFLAGS)
-
-ifneq ($(VERSION),)
-CFLAGS  += -DCERBERUS_VERSION=\"$(VERSION)\"
-endif
-
-ifneq ($(MBEDTLS),)
-CFLAGS  += -I$(MBEDTLS)/include
-LDFLAGS += -L$(MBEDTLS)/lib
-endif
-
-ifeq ($(STATIC),1)
-LDFLAGS += -static
-endif
-
-BIN = cerberus
-
-all: $(BIN)
-
-$(BIN): main.c
-	$(CC) $(CFLAGS) -o $@ main.c $(LDFLAGS) $(LIBS)
-	$(STRIP) $@
-	@echo "==> $@: $$(wc -c <$@) bytes"
-
-size: $(BIN)
-	@size $(BIN) || true
-	@ls -l $(BIN)
-
-install: $(BIN)
-	install -D -m 0755 $(BIN) $(DESTDIR)$(PREFIX)/sbin/$(BIN)
-	install -D -m 0755 S99cerberus $(DESTDIR)/etc/init.d/S99cerberus
+# ./cerberus is where builds landed before the move to src/; a stale one must not pass for current.
+clean:
+	$(MAKE) -C src $@
+	rm -f cerberus
 
 test:
 	tests/run.sh
 
-clean:
-	rm -f $(BIN)
-
-.PHONY: all size install test clean
+.PHONY: all install size clean test

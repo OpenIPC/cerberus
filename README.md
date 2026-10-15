@@ -246,10 +246,13 @@ To check it on a camera: `cerberus snapshot` (does majestic hand out a frame as 
 
 ## Building
 
+The agent is the `src/` directory: `src/cerberus.c`, its `Makefile` and the `S99cerberus` init
+script — nothing else is needed to build or install it. The top-level `Makefile` forwards to it.
+
 ```sh
 make                                   # native, against the system mbedTLS (3.x or 2.28 LTS)
 make STATIC=1                          # static
-make VERSION=1.2.0                     # the version the agent reports (default: the one in main.c)
+make VERSION=1.2.0                     # the version the agent reports (default: the one in src/cerberus.c)
 make install DESTDIR=/tmp/rootfs       # /usr/sbin/cerberus + /etc/init.d/S99cerberus
 ```
 
@@ -264,10 +267,11 @@ ci/build.sh mipsel                     # one of them
 ci/assemble.sh                         # + installers, init script, SHA256SUMS → a release in dist/
 ```
 
-Inside a firmware build, with the firmware's own toolchain:
+Inside a firmware build, with the firmware's own toolchain, point at `src/`:
 
 ```sh
-make CC=mipsel-openipc-linux-musl-gcc MBEDTLS=<buildroot-staging>
+make -C src CC=mipsel-openipc-linux-musl-gcc MBEDTLS=<buildroot-staging> STATIC=1
+make -C src install DESTDIR=<target-rootfs>
 ```
 
 ## Tests

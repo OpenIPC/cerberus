@@ -11,7 +11,7 @@ OUT=${OUT:-dist}
 
 ls "$OUT"/cerberus-* >/dev/null 2>&1 || { echo "no $OUT/cerberus-* — run ci/build.sh first"; exit 1; }
 
-cp install.sh uninstall.sh S99cerberus LICENSE.md "$OUT/"
+cp install.sh uninstall.sh src/S99cerberus LICENSE.md "$OUT/"
 chmod 0755 "$OUT"/cerberus-* "$OUT/install.sh" "$OUT/uninstall.sh" "$OUT/S99cerberus"
 
 (

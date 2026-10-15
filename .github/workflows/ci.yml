@@ -19,7 +19,7 @@ jobs:
     # a key that is not set is simply empty.
     steps:
       - uses: actions/checkout@v4
-      - run: shellcheck -S warning -e SC2155 S99cerberus install.sh uninstall.sh ci/build.sh ci/assemble.sh tests/run.sh tests/suite.sh
+      - run: shellcheck -S warning -e SC2155 src/S99cerberus install.sh uninstall.sh ci/build.sh ci/assemble.sh tests/run.sh tests/suite.sh
 
   test:
     name: tests (${{ matrix.name }})

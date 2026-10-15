@@ -43,8 +43,8 @@ else
 	LIBC=glibc
 fi
 
-mkdir -p /build && cp /src/main.c /src/Makefile /build/ && cd /build || exit 1
-SRC_VERSION=$(sed -n 's/^#define CERBERUS_VERSION "\(.*\)"$/\1/p' main.c)
+mkdir -p /build && cp /src/src/cerberus.c /src/src/Makefile /build/ && cd /build || exit 1
+SRC_VERSION=$(sed -n 's/^#define CERBERUS_VERSION "\(.*\)"$/\1/p' cerberus.c)
 MBEDTLS_VERSION=$(sed -n 's/^#define MBEDTLS_VERSION_STRING *"\(.*\)"$/\1/p' /usr/include/mbedtls/build_info.h /usr/include/mbedtls/version.h 2>/dev/null | head -1)
 echo "    $LIBC, mbedTLS $MBEDTLS_VERSION, cerberus $SRC_VERSION"
 
@@ -443,14 +443,14 @@ SUB=$T/s99.env
 printf 'streq_subnet=10.99.0.0/16\n' >$SUB
 mkdir -p /usr/sbin && cp $A /usr/sbin/cerberus
 check "S99cerberus falls back to streq_* keys" \
-	"$(env PATH="$T/fw:$PATH" FAKE_UBOOT=$SUB CERBERUS_STORE=file:$T/nothing.env sh /src/S99cerberus status 2>/dev/null | sed -n 's/^network subnet *//p')" \
+	"$(env PATH="$T/fw:$PATH" FAKE_UBOOT=$SUB CERBERUS_STORE=file:$T/nothing.env sh /src/src/S99cerberus status 2>/dev/null | sed -n 's/^network subnet *//p')" \
 	"10.99.0.0/16 (from CERBERUS_SUBNET)"
 printf 'cerberus_subnet=10.98.0.0/16\n' >>$SUB
 check "and prefers cerberus_*" \
-	"$(env PATH="$T/fw:$PATH" FAKE_UBOOT=$SUB CERBERUS_STORE=file:$T/nothing.env sh /src/S99cerberus status 2>/dev/null | sed -n 's/^network subnet *//p')" \
+	"$(env PATH="$T/fw:$PATH" FAKE_UBOOT=$SUB CERBERUS_STORE=file:$T/nothing.env sh /src/src/S99cerberus status 2>/dev/null | sed -n 's/^network subnet *//p')" \
 	"10.98.0.0/16 (from CERBERUS_SUBNET)"
 check "unprovisioned: start says so and exits 0" \
-	"$(env PATH="$T/fw:$PATH" FAKE_UBOOT=$T/empty.env sh /src/S99cerberus start 2>&1; echo "rc=$?")" \
+	"$(env PATH="$T/fw:$PATH" FAKE_UBOOT=$T/empty.env sh /src/src/S99cerberus start 2>&1; echo "rc=$?")" \
 	"cerberus: not provisioned (fw_setenv cerberus_api ...)
 rc=0"
 
@@ -461,7 +461,7 @@ REL=$T/release
 mkdir -p $REL
 ARCH=$(uname -m)
 cp $A $REL/cerberus-$ARCH
-cp /src/install.sh /src/uninstall.sh /src/S99cerberus $REL/
+cp /src/install.sh /src/uninstall.sh /src/src/S99cerberus $REL/
 (cd $REL && for f in cerberus-$ARCH install.sh uninstall.sh S99cerberus; do
 	printf '%s  %s\n' "$(sha256sum $f | cut -d' ' -f1)" "$f"; done >SHA256SUMS)
 rm -f /usr/sbin/cerberus /etc/init.d/S99cerberus
@@ -586,7 +586,7 @@ check "and, a moment later, itself" "$(yes_if test -e $T/victim/cerberus)" "no"
 
 # ------------------------------------------------------------------ installers
 section "shipped scripts"
-for s in S99cerberus install.sh uninstall.sh; do
+for s in src/S99cerberus install.sh uninstall.sh; do
 	check "$s parses" "$(yes_if sh -n /src/$s)" "yes"
 done
 for s in install.sh uninstall.sh; do
