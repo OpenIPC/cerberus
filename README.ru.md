@@ -147,6 +147,7 @@ cerberus keygen    # напечатать пару ключей (stdout — да
 cerberus clean     # убрать агента: интерфейс, автозапуск, сохранённое и сам бинарь
 cerberus motion    # сказать работающему агенту «движение», как это делает хук majestic
 cerberus snapshot  # взять один кадр с CERBERUS_SNAPSHOT_URL в /tmp/cerberus-snapshot.jpg
+cerberus init-script [PATH|-]  # записать init-скрипт, запускающий этот бинарь [/etc/init.d/S99cerberus]
 ```
 
 ### Раньше — `streq_*`

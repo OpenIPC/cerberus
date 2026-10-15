@@ -150,6 +150,7 @@ cerberus keygen    # print the keypair (stdout is data, diagnostics go to stderr
 cerberus clean     # remove the agent: interface, init script, stored material, the binary
 cerberus motion    # tell the running agent there is motion, as majestic's hook does
 cerberus snapshot  # fetch one frame from CERBERUS_SNAPSHOT_URL into /tmp/cerberus-snapshot.jpg
+cerberus init-script [PATH|-]  # write the init script that starts this binary [/etc/init.d/S99cerberus]
 ```
 
 ### Formerly `streq_*`

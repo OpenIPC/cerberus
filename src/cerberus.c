@@ -2311,6 +2311,170 @@ static int cmd_keygen(void)
     return 0;
 }
 
+/* ------------------------------------------------------------ init script */
+
+/*
+ * The BusyBox init script, carried by the binary it starts: `cerberus init-script` writes it.
+ *
+ * The script is half of the agent's contract — which U-Boot keys become which CERBERUS_* variables,
+ * how the agent is started, where its pidfile is — and a binary from one release next to a script
+ * from another is a real state on a camera (a binary updated by hand, a firmware with its own copy).
+ * Written by the binary, the two cannot disagree. DAEMON is wherever this binary actually is, so an
+ * agent kept on an SD card gets a script that starts that one.
+ *
+ * Until src/S99cerberus leaves the repository the test suite checks that this is the same text.
+ */
+static const char g_init_head[] =
+    "#!/bin/sh\n"
+    "# OpenIPC uses BusyBox init, not systemd. Config lives in the U-Boot environment, which is also\n"
+    "# where cerberus keeps the join material it gets back from the coordinator, so a camera is\n"
+    "# provisioned with `fw_setenv` and a restart, without touching the read-only rootfs.\n"
+    "\n"
+    "DAEMON=";
+
+static const char g_init_tail[] =
+    "PIDFILE=/var/run/cerberus.pid\n"
+    "\n"
+    "# cerberus_<name>, or streq_<name> — what the keys were called before the agent was renamed. A\n"
+    "# missing key is harmless: an empty variable means \"the default\" to the agent.\n"
+    "uenv() {\n"
+    "\tfw_printenv -n \"cerberus_$1\" 2>/dev/null || fw_printenv -n \"streq_$1\" 2>/dev/null\n"
+    "}\n"
+    "\n"
+    "export CERBERUS_API=\"$(uenv api)\"\n"
+    "export CERBERUS_ENROLLMENT_TOKEN=\"$(uenv enrollment_token)\"\n"
+    "export CERBERUS_HOSTNAME=\"$(uenv hostname)\"\n"
+    "# A firmware may carry no CA bundle at all; then enrolment fails on the coordinator's certificate\n"
+    "# and nothing short of a reflash fixes it. Point cerberus_ca at the root certificate instead.\n"
+    "export CERBERUS_CA=\"$(uenv ca)\"\n"
+    "export CERBERUS_KIND=\"$(uenv kind)\"\n"
+    "export CERBERUS_SUBNET=\"$(uenv subnet)\"\n"
+    "export CERBERUS_HEARTBEAT=\"$(uenv heartbeat)\"\n"
+    "export CERBERUS_PING_TARGET=\"$(uenv ping_target)\"\n"
+    "export CERBERUS_PING_INTERVAL=\"$(uenv ping_interval)\"\n"
+    "export CERBERUS_PING_TIMEOUT=\"$(uenv ping_timeout)\"\n"
+    "export CERBERUS_PING_FAILS=\"$(uenv ping_fails)\"\n"
+    "# Motion events: on by default. cerberus_snapshot_url carries majestic's password when it has one.\n"
+    "export CERBERUS_EVENTS=\"$(uenv events)\"\n"
+    "export CERBERUS_SNAPSHOT_URL=\"$(uenv snapshot_url)\"\n"
+    "CERBERUS_IFACE=$(uenv iface)\n"
+    "export CERBERUS_IFACE=${CERBERUS_IFACE:-wg0}\n"
+    "\n"
+    "case \"$1\" in\n"
+    "\tstart)\n"
+    "\t\t[ -n \"$CERBERUS_API\" ] || { echo \"cerberus: not provisioned (fw_setenv cerberus_api ...)\"; exit 0; }\n"
+    "\t\techo \"Starting cerberus...\"\n"
+    "\t\tstart-stop-daemon -S -q -m -b -p $PIDFILE -x \"$DAEMON\" -- run\n"
+    "\t\t;;\n"
+    "\tstop)\n"
+    "\t\techo \"Stopping cerberus...\"\n"
+    "\t\tstart-stop-daemon -K -q -p $PIDFILE\n"
+    "\t\t# The agent may never have got as far as the interface; for init, stopping a service that\n"
+    "\t\t# is not up is still a success.\n"
+    "\t\tip link del dev \"$CERBERUS_IFACE\" 2>/dev/null || true\n"
+    "\t\t;;\n"
+    "\trestart|reload)\n"
+    "\t\t\"$0\" stop\n"
+    "\t\tsleep 1\n"
+    "\t\t\"$0\" start\n"
+    "\t\t;;\n"
+    "\tstatus)\n"
+    "\t\t\"$DAEMON\" status\n"
+    "\t\t;;\n"
+    "\t*)\n"
+    "\t\techo \"Usage: $0 {start|stop|restart|status}\"\n"
+    "\t\texit 1\n"
+    "\t\t;;\n"
+    "esac\n"
+    ;
+
+/* Where this binary is: on a camera /usr/sbin/cerberus, on a bench whatever it is. 1 when that is
+ * known, 0 when /proc cannot say and the default stands in, -1 when the path does not fit in `out`
+ * (readlink truncates without saying so — a full buffer is the only sign). */
+static int self_path(char *out, size_t out_sz)
+{
+    ssize_t n = readlink("/proc/self/exe", out, out_sz);
+    if (n > 0 && (size_t)n < out_sz) {
+        out[n] = 0;
+        return 1;
+    }
+    snprintf(out, out_sz, "%s", DEFAULT_SELF_PATH);
+    return n > 0 ? -1 : 0;
+}
+
+/* `in` as one shell word: in single quotes, a quote inside as '\''. 0 when it does not fit. */
+static int sh_quote(const char *in, char *out, size_t out_sz)
+{
+    size_t n = 0;
+
+    if (out_sz < 3) return 0;
+    out[n++] = '\'';
+    for (; *in; in++) {
+        if (*in == '\'') {
+            if (n + 4 >= out_sz) return 0;
+            memcpy(out + n, "'\\''", 4);
+            n += 4;
+        } else {
+            if (n + 1 >= out_sz) return 0;
+            out[n++] = *in;
+        }
+    }
+    if (n + 2 > out_sz) return 0;
+    out[n++] = '\'';
+    out[n] = 0;
+    return 1;
+}
+
+/*
+ * `cerberus init-script [PATH|-]`: the init script for this binary, at PATH or on stdout.
+ *
+ * Written next to PATH under a name of its own (mkstemp: created exclusively, so neither a symlink
+ * left there nor a second init-script running at the same moment can redirect or mix the write),
+ * made executable through the descriptor, and renamed over PATH only once it is whole.
+ */
+static int cmd_init_script(const char *dest)
+{
+    char self[1024], word[4200], tmp[1100];
+    FILE *f;
+    int fd, ok, n;
+
+    if (self_path(self, sizeof self) < 0 || !sh_quote(self, word, sizeof word)) {
+        fprintf(stderr, "cerberus: the path of this binary is too long for an init script\n");
+        return 1;
+    }
+    if (!strcmp(dest, "-")) {
+        ok = fputs(g_init_head, stdout) >= 0 && printf("%s\n", word) > 0 && fputs(g_init_tail, stdout) >= 0;
+        return ok && fflush(stdout) == 0 ? 0 : 1;
+    }
+
+    n = snprintf(tmp, sizeof tmp, "%s.XXXXXX", dest);
+    if (n <= 0 || (size_t)n >= sizeof tmp) {
+        fprintf(stderr, "cerberus: %s is too long a path\n", dest);
+        return 1;
+    }
+    mkparent(dest);
+    if ((fd = mkstemp(tmp)) < 0) {
+        fprintf(stderr, "cerberus: cannot write next to %s: %s\n", dest, strerror(errno));
+        return 1;
+    }
+    if (!(f = fdopen(fd, "w"))) {
+        close(fd);
+        unlink(tmp);
+        fprintf(stderr, "cerberus: cannot write %s: %s\n", tmp, strerror(errno));
+        return 1;
+    }
+    ok = fputs(g_init_head, f) >= 0 && fprintf(f, "%s\n", word) > 0 && fputs(g_init_tail, f) >= 0 &&
+         fchmod(fd, 0755) == 0;
+    if (fclose(f) != 0) ok = 0;
+    if (!ok || rename(tmp, dest) != 0) {
+        fprintf(stderr, "cerberus: cannot install %s: %s\n", dest, strerror(errno));
+        unlink(tmp);
+        return 1;
+    }
+    note("wrote %s, which starts %s", dest, self);
+    return 0;
+}
+
 /*
  * Убирает агента с камеры целиком: интерфейс, автозапуск, состояние и сам бинарь.
  *
@@ -2332,18 +2496,13 @@ static int cmd_clean(void)
         "events", "snapshot_url",
         NULL
     };
-    char self[256];
-    char cmd[320];
+    char self[1024], word[4200];
+    char cmd[4300];
     char *sh[] = { "sh", "-c", NULL, NULL };
-    ssize_t n;
-    int i;
+    int i, known;
 
     /* Где мы лежим на самом деле: на камере это /usr/sbin/cerberus, на стенде — что угодно. */
-    n = readlink("/proc/self/exe", self, sizeof self - 1);
-    if (n <= 0)
-        snprintf(self, sizeof self, "%s", DEFAULT_SELF_PATH);
-    else
-        self[n] = 0;
+    known = self_path(self, sizeof self) >= 0;
 
     runf("ip link del dev %s", g_cfg.iface);
     motion_hook_remove();
@@ -2363,7 +2522,13 @@ static int cmd_clean(void)
      * нормальной ФС, но на камере ФС бывает какая угодно, а половина удалённого агента хуже целого.
      * Три секунды — чтобы этот процесс успел закончиться и отдать код возврата тому, кто его звал.
      */
-    snprintf(cmd, sizeof cmd, "(sleep 3; rm -f %s) >/dev/null 2>&1 &", self);
+    /* Quoted: an agent kept under "/mnt/SD Card" must not have rm take two other paths instead. A
+     * path too long to know is left alone rather than guessed at. */
+    if (!known || !sh_quote(self, word, sizeof word)) {
+        warn_("cannot tell where this binary is — remove it by hand");
+        return 0;
+    }
+    snprintf(cmd, sizeof cmd, "(sleep 3; rm -f %s) >/dev/null 2>&1 &", word);
     sh[2] = cmd;
     run(sh, NULL, 0);
     return 0;
@@ -2374,7 +2539,7 @@ static void usage(void)
     fputs(
         "cerberus " CERBERUS_VERSION " — on-camera cloud agent for OpenIPC\n"
         "\n"
-        "usage: cerberus [enroll|up|run|status|keygen|clean|motion|snapshot]\n"
+        "usage: cerberus [enroll|up|run|status|keygen|clean|motion|snapshot|init-script]\n"
         "  enroll   enroll into the coordinator and persist the join material (idempotent)\n"
         "  up       program the WireGuard interface from the stored material\n"
         "  run      enroll + up + watch the tunnel (the default; what the init script calls)\n"
@@ -2383,6 +2548,8 @@ static void usage(void)
         "  clean    remove the agent: interface, init script, stored material, the binary\n"
         "  motion   tell the running agent there is motion, as majestic's hook does\n"
         "  snapshot fetch one frame from CERBERUS_SNAPSHOT_URL into /tmp/cerberus-snapshot.jpg\n"
+        "  init-script [PATH|-]\n"
+        "           write the BusyBox init script that starts this binary  [" INIT_SCRIPT "]\n"
         "\n"
         "config (env; the old STREQ_* names are accepted too):\n"
         "  CERBERUS_API                coordinator base URL incl. /v1  [https://api.localhost/v1]\n"
@@ -2427,8 +2594,9 @@ int main(int argc, char **argv)
 
     cfg_load();
 
-    /* Before anything reads the store: `clean` removes both spellings itself. */
-    if (strcmp(cmd, "clean") != 0)
+    /* Before anything reads the store: `clean` removes both spellings itself, and `init-script`
+     * never touches it. */
+    if (strcmp(cmd, "clean") != 0 && strcmp(cmd, "init-script") != 0)
         store_migrate_legacy();
 
     if (!strcmp(cmd, "status")) return cmd_status();
@@ -2438,6 +2606,7 @@ int main(int argc, char **argv)
     if (!strcmp(cmd, "up")) return link_up();
     if (!strcmp(cmd, "motion")) return cmd_motion();
     if (!strcmp(cmd, "snapshot")) return cmd_snapshot();
+    if (!strcmp(cmd, "init-script")) return cmd_init_script(argc > 2 ? argv[2] : INIT_SCRIPT);
     if (!strcmp(cmd, "run")) {
         /* A configuration error, so it dies here and now — not as an enrolment retried forever. */
         if (!url_ok(g_cfg.api))
