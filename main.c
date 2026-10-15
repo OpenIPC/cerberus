@@ -1169,6 +1169,30 @@ static int json_str(const char *json, const char *key, char *out, size_t out_sz)
     return 1;
 }
 
+/*
+ * A configured string as the inside of a JSON string literal: `"` and `\` escaped, control characters
+ * as \u00XX. Hostnames are typed by people and may hold either. One that does not fit is a
+ * configuration error — sent cut off it would only come back as a refused enrolment, forever.
+ */
+static const char *json_esc(const char *what, const char *in, char *out, size_t out_sz)
+{
+    size_t n = 0, len;
+    char e[8];
+
+    for (; *in; in++) {
+        unsigned char ch = (unsigned char)*in;
+        if (ch == '"' || ch == '\\') { e[0] = '\\'; e[1] = (char)ch; len = 2; }
+        else if (ch < 0x20) { snprintf(e, sizeof e, "\\u%04x", ch); len = 6; }
+        else { e[0] = (char)ch; len = 1; }
+        if (n + len + 1 > out_sz)
+            die("%s is too long for the enrolment request", what);
+        memcpy(out + n, e, len);
+        n += len;
+    }
+    out[n] = 0;
+    return out;
+}
+
 /* ------------------------------------------------------------------ device */
 
 /*
@@ -1263,9 +1287,10 @@ static void claim_code_get(char *code, size_t code_sz)
 static int enroll(void)
 {
     char priv_b64[64], pub_b64[64], code[16], hash[65];
-    char url[512], body[1024], resp[8192];
+    char url[512], body[2048], resp[8192];
     char node[128], ip[64], ep[256], hubkey[64], allowed[80], subnet[64], hubip[64];
-    int status = 0;
+    char tok[512], kind[128], host[768];
+    int status = 0, n;
 
     if (store_get("cerberus_node_id", node, sizeof node)) {
         store_get("cerberus_overlay_ip", ip, sizeof ip);
@@ -1284,16 +1309,21 @@ static int enroll(void)
     /* agentVersion — U0. Обновлять себя эта камера не умеет (rootfs только для чтения, путь
      * обновления — прошивка), поэтому облако ей не апдейтер, а термометр: пусть владелец видит, что
      * на камере агент позапрошлого года, раньше, чем это выяснится другим способом. */
+    json_esc("CERBERUS_ENROLLMENT_TOKEN", g_cfg.token, tok, sizeof tok);
+    json_esc("CERBERUS_KIND", g_cfg.kind, kind, sizeof kind);
     if (g_cfg.hostname)
-        snprintf(body, sizeof body,
-                 "{\"enrollmentToken\":\"%s\",\"devicePublicKey\":\"%s\",\"kind\":\"%s\","
-                 "\"hostname\":\"%s\",\"claimCodeHash\":\"%s\",\"agentVersion\":\"%s\"}",
-                 g_cfg.token, pub_b64, g_cfg.kind, g_cfg.hostname, hash, CERBERUS_VERSION);
+        n = snprintf(body, sizeof body,
+                     "{\"enrollmentToken\":\"%s\",\"devicePublicKey\":\"%s\",\"kind\":\"%s\","
+                     "\"hostname\":\"%s\",\"claimCodeHash\":\"%s\",\"agentVersion\":\"%s\"}",
+                     tok, pub_b64, kind, json_esc("CERBERUS_HOSTNAME", g_cfg.hostname, host, sizeof host),
+                     hash, CERBERUS_VERSION);
     else
-        snprintf(body, sizeof body,
-                 "{\"enrollmentToken\":\"%s\",\"devicePublicKey\":\"%s\",\"kind\":\"%s\","
-                 "\"claimCodeHash\":\"%s\",\"agentVersion\":\"%s\"}",
-                 g_cfg.token, pub_b64, g_cfg.kind, hash, CERBERUS_VERSION);
+        n = snprintf(body, sizeof body,
+                     "{\"enrollmentToken\":\"%s\",\"devicePublicKey\":\"%s\",\"kind\":\"%s\","
+                     "\"claimCodeHash\":\"%s\",\"agentVersion\":\"%s\"}",
+                     tok, pub_b64, kind, hash, CERBERUS_VERSION);
+    if (n <= 0 || (size_t)n >= sizeof body)
+        die("the enrolment request does not fit in %u bytes", (unsigned)sizeof body);
 
     note("enrolling at %s as %s", url, pub_b64);
     if (http_post_json(url, body, resp, sizeof resp, &status) != 0)
