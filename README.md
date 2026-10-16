@@ -74,60 +74,60 @@ Every release carries one **static** binary per CPU architecture — static with
 inside, so it does not matter which libc or which mbedTLS a given firmware has, or whether it has one
 at all:
 
-| file | runs on |
-|---|---|
-| `cerberus-arm` | every ARM camera from ARMv5 to ARMv7 — HiSilicon, Goke, SigmaStar, Fullhan, … (soft-float, so ARMv5 without VFP too) |
-| `cerberus-mipsel` | MIPS cameras — Ingenic T10, T20, T21, T31, T40, … |
-| `cerberus-aarch64` | 64-bit ARM |
-| `cerberus-x86_64` | VMs and test boxes |
-| `install.sh` | the installer; `--uninstall` takes the agent off again |
-| `uninstall.sh` | the old address of `install.sh --uninstall`, kept for commands already printed |
-| `SHA256SUMS` | checksums of all of the above; the installer verifies against it |
-| `LICENSE.md` | the license |
+| file               | runs on                                                                                                              |
+|--------------------|----------------------------------------------------------------------------------------------------------------------|
+| `cerberus-arm`     | every ARM camera from ARMv5 to ARMv7 — HiSilicon, Goke, SigmaStar, Fullhan, … (soft-float, so ARMv5 without VFP too) |
+| `cerberus-mipsel`  | MIPS cameras — Ingenic T10, T20, T21, T31, T40, …                                                                    |
+| `cerberus-aarch64` | 64-bit ARM                                                                                                           |
+| `cerberus-x86_64`  | VMs and test boxes                                                                                                   |
+| `install.sh`       | the installer; `--uninstall` takes the agent off again                                                               |
+| `uninstall.sh`     | the old address of `install.sh --uninstall`, kept for commands already printed                                       |
+| `SHA256SUMS`       | checksums of all of the above; the installer verifies against it                                                     |
+| `LICENSE.md`       | the license                                                                                                          |
 
 Asset names carry no version on purpose: `releases/latest/download/<name>` always points at the
 current release.
 
-| binary | bytes |
-|---|---|
-| `cerberus-arm` | 304 300 |
-| `cerberus-mipsel` | 397 772 |
+| binary             | bytes   |
+|--------------------|---------|
+| `cerberus-arm`     | 304 300 |
+| `cerberus-mipsel`  | 397 772 |
 | `cerberus-aarch64` | 329 240 |
-| `cerberus-x86_64` | 312 904 |
+| `cerberus-x86_64`  | 312 904 |
 
 Most of that is mbedTLS, built with only what a TLS client needs (`ci/build.sh` lists what is left
 out, and checks TLS against local servers on every build); the agent itself is ~30 KB.
 
 ## What the camera needs
 
-| needed | for | without it |
-|---|---|---|
-| kernel WireGuard + `wg` | the whole data plane | the agent is useless |
-| `ip` | address and link on `wg0` | same |
-| `fw_setenv` / `fw_printenv` | storage that survives a reflash | falls back to a file (which does not) |
-| `ping` | the in-tunnel probe | the probe is switched off with a warning; the handshake watch stays |
-| `reboot` | the `Reboot` command | the command is logged as impossible |
-| `curl` with TLS | the installer | download the files by hand |
+| needed                      | for                             | without it                                                          |
+|-----------------------------|---------------------------------|---------------------------------------------------------------------|
+| kernel WireGuard + `wg`     | the whole data plane            | the agent is useless                                                |
+| `ip`                        | address and link on `wg0`       | same                                                                |
+| `fw_setenv` / `fw_printenv` | storage that survives a reflash | falls back to a file (which does not)                               |
+| `ping`                      | the in-tunnel probe             | the probe is switched off with a warning; the handshake watch stays |
+| `reboot`                    | the `Reboot` command            | the command is logged as impossible                                 |
+| `curl` with TLS             | the installer                   | download the files by hand                                          |
 
 ## Configuration
 
 `S99cerberus` reads the U-Boot environment and hands it to the agent as `CERBERUS_*` variables:
 
-| U-Boot key | variable | default | meaning |
-|---|---|---|---|
-| `cerberus_api` | `CERBERUS_API` | — | coordinator base URL, including `/v1` |
-| `cerberus_enrollment_token` | `CERBERUS_ENROLLMENT_TOKEN` | — | one-shot token from the owner |
-| `cerberus_hostname` | `CERBERUS_HOSTNAME` | — | the name the camera shows up under in the panel |
-| `cerberus_ca` | `CERBERUS_CA` | `/etc/ssl/certs/ca-certificates.crt` | CA file or directory for TLS |
-| `cerberus_iface` | `CERBERUS_IFACE` | `wg0` | WireGuard interface |
-| `cerberus_subnet` | `CERBERUS_SUBNET` | `10.80.0.0/16` | fallback only: the network's subnet arrives with the join material |
-| `cerberus_heartbeat` | `CERBERUS_HEARTBEAT` | `20` | seconds between heartbeats; `0` disables |
-| `cerberus_ping_target` | `CERBERUS_PING_TARGET` | the hub | in-tunnel probe target |
-| `cerberus_ping_interval` | `CERBERUS_PING_INTERVAL` | `60` | seconds between probes; `0` disables |
-| `cerberus_ping_timeout` | `CERBERUS_PING_TIMEOUT` | `3` | seconds one probe waits |
-| `cerberus_ping_fails` | `CERBERUS_PING_FAILS` | `3` | failed probes in a row before the interface is rebuilt |
-| `cerberus_events` | `CERBERUS_EVENTS` | `1` | motion events; `0` installs no hook and sends nothing |
-| `cerberus_snapshot_url` | `CERBERUS_SNAPSHOT_URL` | `http://127.0.0.1/image.jpg?width=640&height=360` | majestic's frame; `http://user:pass@127.0.0.1/…` when it wants a password |
+| U-Boot key                  | variable                    | default                                           | meaning                                                                   |
+|-----------------------------|-----------------------------|---------------------------------------------------|---------------------------------------------------------------------------|
+| `cerberus_api`              | `CERBERUS_API`              | —                                                 | coordinator base URL, including `/v1`                                     |
+| `cerberus_enrollment_token` | `CERBERUS_ENROLLMENT_TOKEN` | —                                                 | one-shot token from the owner                                             |
+| `cerberus_hostname`         | `CERBERUS_HOSTNAME`         | —                                                 | the name the camera shows up under in the panel                           |
+| `cerberus_ca`               | `CERBERUS_CA`               | `/etc/ssl/certs/ca-certificates.crt`              | CA file or directory for TLS                                              |
+| `cerberus_iface`            | `CERBERUS_IFACE`            | `wg0`                                             | WireGuard interface                                                       |
+| `cerberus_subnet`           | `CERBERUS_SUBNET`           | `10.80.0.0/16`                                    | fallback only: the network's subnet arrives with the join material        |
+| `cerberus_heartbeat`        | `CERBERUS_HEARTBEAT`        | `20`                                              | seconds between heartbeats; `0` disables                                  |
+| `cerberus_ping_target`      | `CERBERUS_PING_TARGET`      | the hub                                           | in-tunnel probe target                                                    |
+| `cerberus_ping_interval`    | `CERBERUS_PING_INTERVAL`    | `60`                                              | seconds between probes; `0` disables                                      |
+| `cerberus_ping_timeout`     | `CERBERUS_PING_TIMEOUT`     | `3`                                               | seconds one probe waits                                                   |
+| `cerberus_ping_fails`       | `CERBERUS_PING_FAILS`       | `3`                                               | failed probes in a row before the interface is rebuilt                    |
+| `cerberus_events`           | `CERBERUS_EVENTS`           | `1`                                               | motion events; `0` installs no hook and sends nothing                     |
+| `cerberus_snapshot_url`     | `CERBERUS_SNAPSHOT_URL`     | `http://127.0.0.1/image.jpg?width=640&height=360` | majestic's frame; `http://user:pass@127.0.0.1/…` when it wants a password |
 
 `cerberus_ca` matters more than it looks: a firmware may carry no CA bundle at all, and then
 enrolment fails on the coordinator's certificate with no way to fix it short of a reflash — point it
@@ -215,11 +215,11 @@ nothing crosses it — a route someone took, an interface somebody else reused, 
 nothing. Only a packet that comes back says the tunnel works. The recovery ladder goes up in cost,
 and the camera climbs it alone:
 
-| what is seen | what is done |
-|---|---|
-| handshake older than `CERBERUS_STALE_AFTER` | the peer is re-poked (which also re-resolves the hub's name) |
-| `CERBERUS_PING_FAILS` probes in a row unanswered | the interface is torn down and rebuilt |
-| twice that — the rebuild did not help | the agent re-execs itself |
+| what is seen                                     | what is done                                                 |
+|--------------------------------------------------|--------------------------------------------------------------|
+| handshake older than `CERBERUS_STALE_AFTER`      | the peer is re-poked (which also re-resolves the hub's name) |
+| `CERBERUS_PING_FAILS` probes in a row unanswered | the interface is torn down and rebuilt                       |
+| twice that — the rebuild did not help            | the agent re-execs itself                                    |
 
 `cerberus run` does not die of an unreachable coordinator either: init on a camera starts it once and
 never looks again, so enrolment is retried with a doubling pause for as long as it takes.

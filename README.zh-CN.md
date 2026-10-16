@@ -66,58 +66,58 @@ fw_setenv cerberus_enrollment_token tok_...
 每个发布都为每种 CPU 架构提供一个**静态**二进制文件：musl 和 mbedTLS 已编译在内，因此无论固件使用哪种 libc、
 带有哪个版本的 mbedTLS，甚至没有 mbedTLS，都没有关系：
 
-| 文件 | 适用于 |
-|---|---|
-| `cerberus-arm` | 从 ARMv5 到 ARMv7 的所有 ARM 摄像机——海思、国科、星宸、富瀚……（软浮点，因此也支持没有 VFP 的 ARMv5） |
-| `cerberus-mipsel` | MIPS 摄像机——君正 T10、T20、T21、T31、T40…… |
-| `cerberus-aarch64` | 64 位 ARM |
-| `cerberus-x86_64` | 虚拟机和测试环境 |
-| `install.sh` | 安装脚本；加 `--uninstall` 则卸载 agent |
-| `uninstall.sh` | `install.sh --uninstall` 的旧地址，为已经给出的命令保留 |
-| `SHA256SUMS` | 以上所有文件的校验和，安装脚本据此校验 |
-| `LICENSE.md` | 许可证 |
+| 文件               | 适用于                                                                                               |
+|--------------------|------------------------------------------------------------------------------------------------------|
+| `cerberus-arm`     | 从 ARMv5 到 ARMv7 的所有 ARM 摄像机——海思、国科、星宸、富瀚……（软浮点，因此也支持没有 VFP 的 ARMv5） |
+| `cerberus-mipsel`  | MIPS 摄像机——君正 T10、T20、T21、T31、T40……                                                          |
+| `cerberus-aarch64` | 64 位 ARM                                                                                            |
+| `cerberus-x86_64`  | 虚拟机和测试环境                                                                                     |
+| `install.sh`       | 安装脚本；加 `--uninstall` 则卸载 agent                                                              |
+| `uninstall.sh`     | `install.sh --uninstall` 的旧地址，为已经给出的命令保留                                              |
+| `SHA256SUMS`       | 以上所有文件的校验和，安装脚本据此校验                                                               |
+| `LICENSE.md`       | 许可证                                                                                               |
 
 文件名中故意不带版本号：`releases/latest/download/<文件名>` 始终指向最新发布。
 
-| 二进制文件 | 字节 |
-|---|---|
-| `cerberus-arm` | 304 300 |
-| `cerberus-mipsel` | 397 772 |
+| 二进制文件         | 字节    |
+|--------------------|---------|
+| `cerberus-arm`     | 304 300 |
+| `cerberus-mipsel`  | 397 772 |
 | `cerberus-aarch64` | 329 240 |
-| `cerberus-x86_64` | 312 904 |
+| `cerberus-x86_64`  | 312 904 |
 
 其中大部分是只保留 TLS 客户端所需功能的 mbedTLS（`ci/build.sh` 列出了关闭的选项，并在每次构建时用本地服务器检查 TLS），代理本身只有约 30 KB。
 
 ## 摄像机需要具备
 
-| 需要 | 用途 | 缺失时 |
-|---|---|---|
-| 内核 WireGuard + `wg` | 整个数据平面 | 代理无法工作 |
-| `ip` | `wg0` 上的地址和链路 | 同上 |
-| `fw_setenv` / `fw_printenv` | 刷写固件后仍保留的存储 | 退回到文件存储（刷写后不会保留） |
-| `ping` | 隧道内探测 | 探测关闭并给出警告，握手监控仍然有效 |
-| `reboot` | `Reboot` 命令 | 命令记录为无法执行 |
-| 支持 TLS 的 `curl` | 安装脚本 | 手动下载文件 |
+| 需要                        | 用途                   | 缺失时                               |
+|-----------------------------|------------------------|--------------------------------------|
+| 内核 WireGuard + `wg`       | 整个数据平面           | 代理无法工作                         |
+| `ip`                        | `wg0` 上的地址和链路   | 同上                                 |
+| `fw_setenv` / `fw_printenv` | 刷写固件后仍保留的存储 | 退回到文件存储（刷写后不会保留）     |
+| `ping`                      | 隧道内探测             | 探测关闭并给出警告，握手监控仍然有效 |
+| `reboot`                    | `Reboot` 命令          | 命令记录为无法执行                   |
+| 支持 TLS 的 `curl`          | 安装脚本               | 手动下载文件                         |
 
 ## 配置
 
 `S99cerberus` 读取 U-Boot 环境变量，并以 `CERBERUS_*` 变量的形式传给代理：
 
-| U-Boot 键 | 变量 | 默认值 | 含义 |
-|---|---|---|---|
-| `cerberus_api` | `CERBERUS_API` | — | 协调器地址，包含 `/v1` |
-| `cerberus_enrollment_token` | `CERBERUS_ENROLLMENT_TOKEN` | — | 所有者签发的一次性令牌 |
-| `cerberus_hostname` | `CERBERUS_HOSTNAME` | — | 摄像机在面板中显示的名称 |
-| `cerberus_ca` | `CERBERUS_CA` | `/etc/ssl/certs/ca-certificates.crt` | TLS 使用的 CA 文件或目录 |
-| `cerberus_iface` | `CERBERUS_IFACE` | `wg0` | WireGuard 接口 |
-| `cerberus_subnet` | `CERBERUS_SUBNET` | `10.80.0.0/16` | 仅作后备：网络子网随入网材料下发 |
-| `cerberus_heartbeat` | `CERBERUS_HEARTBEAT` | `20` | 心跳间隔（秒），`0` 表示关闭 |
-| `cerberus_ping_target` | `CERBERUS_PING_TARGET` | hub | 隧道内探测的目标 |
-| `cerberus_ping_interval` | `CERBERUS_PING_INTERVAL` | `60` | 探测间隔（秒），`0` 表示关闭 |
-| `cerberus_ping_timeout` | `CERBERUS_PING_TIMEOUT` | `3` | 单次探测等待的秒数 |
-| `cerberus_ping_fails` | `CERBERUS_PING_FAILS` | `3` | 连续多少次探测无响应后重建接口 |
-| `cerberus_events` | `CERBERUS_EVENTS` | `1` | 移动事件；`0` 表示不安装钩子、不发送事件 |
-| `cerberus_snapshot_url` | `CERBERUS_SNAPSHOT_URL` | `http://127.0.0.1/image.jpg?width=640&height=360` | majestic 的截图；需要密码时写成 `http://user:pass@127.0.0.1/…` |
+| U-Boot 键                   | 变量                        | 默认值                                            | 含义                                                           |
+|-----------------------------|-----------------------------|---------------------------------------------------|----------------------------------------------------------------|
+| `cerberus_api`              | `CERBERUS_API`              | —                                                 | 协调器地址，包含 `/v1`                                         |
+| `cerberus_enrollment_token` | `CERBERUS_ENROLLMENT_TOKEN` | —                                                 | 所有者签发的一次性令牌                                         |
+| `cerberus_hostname`         | `CERBERUS_HOSTNAME`         | —                                                 | 摄像机在面板中显示的名称                                       |
+| `cerberus_ca`               | `CERBERUS_CA`               | `/etc/ssl/certs/ca-certificates.crt`              | TLS 使用的 CA 文件或目录                                       |
+| `cerberus_iface`            | `CERBERUS_IFACE`            | `wg0`                                             | WireGuard 接口                                                 |
+| `cerberus_subnet`           | `CERBERUS_SUBNET`           | `10.80.0.0/16`                                    | 仅作后备：网络子网随入网材料下发                               |
+| `cerberus_heartbeat`        | `CERBERUS_HEARTBEAT`        | `20`                                              | 心跳间隔（秒），`0` 表示关闭                                   |
+| `cerberus_ping_target`      | `CERBERUS_PING_TARGET`      | hub                                               | 隧道内探测的目标                                               |
+| `cerberus_ping_interval`    | `CERBERUS_PING_INTERVAL`    | `60`                                              | 探测间隔（秒），`0` 表示关闭                                   |
+| `cerberus_ping_timeout`     | `CERBERUS_PING_TIMEOUT`     | `3`                                               | 单次探测等待的秒数                                             |
+| `cerberus_ping_fails`       | `CERBERUS_PING_FAILS`       | `3`                                               | 连续多少次探测无响应后重建接口                                 |
+| `cerberus_events`           | `CERBERUS_EVENTS`           | `1`                                               | 移动事件；`0` 表示不安装钩子、不发送事件                       |
+| `cerberus_snapshot_url`     | `CERBERUS_SNAPSHOT_URL`     | `http://127.0.0.1/image.jpg?width=640&height=360` | majestic 的截图；需要密码时写成 `http://user:pass@127.0.0.1/…` |
 
 `cerberus_ca` 比看上去更重要：固件可能根本不带 CA 证书包，此时注册会因协调器证书校验失败而中断，
 除了重新刷写固件之外无法修复——请将其指向根证书（Let's Encrypt 使用 ISRG Root X1）。
@@ -192,11 +192,11 @@ cerberus init-script [PATH|-]  # 写入启动本二进制文件的启动脚本 [
 接口被他人占用、hub 不转发任何数据。只有返回的数据包才能说明隧道可用。恢复措施按代价从低到高排列，
 摄像机会自行逐级执行：
 
-| 观察到的情况 | 采取的措施 |
-|---|---|
-| 握手时间超过 `CERBERUS_STALE_AFTER` | 重新设置对端（同时重新解析 hub 的域名） |
-| 连续 `CERBERUS_PING_FAILS` 次探测无响应 | 拆除并重建接口 |
-| 达到两倍次数——重建无效 | 代理重新执行自身 |
+| 观察到的情况                            | 采取的措施                              |
+|-----------------------------------------|-----------------------------------------|
+| 握手时间超过 `CERBERUS_STALE_AFTER`     | 重新设置对端（同时重新解析 hub 的域名） |
+| 连续 `CERBERUS_PING_FAILS` 次探测无响应 | 拆除并重建接口                          |
+| 达到两倍次数——重建无效                  | 代理重新执行自身                        |
 
 协调器不可达时 `cerberus run` 也不会退出：摄像机上的 init 只启动它一次，此后不再关注，因此注册会以倍增的间隔
 不断重试，直到成功。
