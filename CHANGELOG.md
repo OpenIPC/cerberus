@@ -4,6 +4,19 @@ The version lives in `CERBERUS_VERSION` in `src/cerberus.c` (`MAJOR.MINOR.PATCH`
 published only as the [`latest`](https://github.com/OpenIPC/cerberus/releases/latest) release
 (see the README); this file is the change history, newest first.
 
+## 0.3.1 — 2026-10-17
+
+One release, `latest` (#32), and a version check (#33).
+
+- Releases: one release, `latest`, titled `Cerberus <version>`, published from `master` when
+  `CERBERUS_VERSION` changes; the versioned releases `v0.1.0`…`v0.3.0` and their tags are gone,
+  their notes are in this file. The download links (`releases/latest/download/<name>`) and the
+  files stay the same.
+- The version compiled into the binary is `CERBERUS_VERSION` in `src/cerberus.c`; it no longer
+  comes from a `v*` tag.
+- CI: a pull request that changes the code or the build raises the version and adds its section
+  here (#33).
+
 ## 0.3.0 — 2026-10-15
 
 - Review fixes: the snapshot URL, the probe subnet, the enrolment JSON, `--help` (PR #12).

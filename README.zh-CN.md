@@ -63,7 +63,8 @@ fw_setenv cerberus_enrollment_token tok_...
 
 ## 发布
 
-每个发布都为每种 CPU 架构提供一个**静态**二进制文件：musl 和 mbedTLS 已编译在内，因此无论固件使用哪种 libc、
+只有一个发布：[`latest`](https://github.com/OpenIPC/cerberus/releases/latest)，标题为 `Cerberus <版本>`；每当版本号变化时都会重新发布。
+它为每种 CPU 架构提供一个**静态**二进制文件：musl 和 mbedTLS 已编译在内，因此无论固件使用哪种 libc、
 带有哪个版本的 mbedTLS，甚至没有 mbedTLS，都没有关系：
 
 | 文件               | 适用于                                                                                               |
@@ -255,12 +256,10 @@ CERBERUS_TEST_IMAGE=debian:bookworm-slim tests/run.sh      # glibc + mbedTLS 2.2
 
 ## CI 与发布
 
-每次 push 和 pull request 都会运行 shellcheck、两代 mbedTLS 上的测试套件以及四个发布构建。推送 `v*` 标签后，
-这些二进制文件会连同安装脚本、启动脚本和 `SHA256SUMS` 一起作为 GitHub release 发布；编译进二进制文件的版本号取自标签。
-
-```sh
-git tag v0.2.0 && git push origin v0.2.0
-```
+每次 push 和 pull request 都会运行 shellcheck、两代 mbedTLS 上的测试套件以及四个发布构建。当推送到 `master` 带来新的
+`CERBERUS_VERSION`（`src/cerberus.c`）时，CI 会用这些二进制文件连同安装脚本、许可证和 `SHA256SUMS` 替换唯一的发布
+`latest`，标题为 `Cerberus <版本>`；不带新版本号的推送不会发布任何内容。编译进二进制文件的版本号就是
+`CERBERUS_VERSION` 本身，不再使用 `v*` 标签。发布方法：在 pull request 中提升版本号并添加其 `CHANGELOG.md` 章节，然后合并。
 
 版本号格式为 `MAJOR.MINOR.PATCH`（`src/cerberus.c` 中的 `CERBERUS_VERSION`）：PATCH 表示修复和小改动，MINOR
 表示新功能，MAJOR 表示不兼容的变更或大规模更新，仅由维护者决定。修改 `src/`、安装脚本、`Makefile` 或 `ci/`
