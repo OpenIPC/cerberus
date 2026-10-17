@@ -64,6 +64,9 @@ fw_setenv cerberus_enrollment_token tok_...
 /etc/init.d/S99cerberus restart
 ```
 
+Older instructions that download `S99cerberus` from the release get a 404: the file is no longer
+published. Run `cerberus init-script` instead, as above.
+
 A token minted in the panel for one camera binds the camera to whoever minted it. With a batch token
 the agent prints a claim code (also shown by `cerberus status`) that is entered in the panel to claim
 the camera.
@@ -321,6 +324,10 @@ when the maintainer decides. A pull request that changes `src/`, the installers,
 `ci/` raises the version as its last commit before the merge, together with its `CHANGELOG.md`
 section; docs, tests and the workflows in `.github/` do not. CI checks this on every pull request
 (`.github/check-version.sh`).
+
+A change to the code or the build that leaves the binaries as they are (a build-script
+tidy-up, a comment) can carry the `no-release` label instead: no new version, no release.
+There are no versioned releases to pin: a rollback is a revert plus a new version.
 
 ## License
 
