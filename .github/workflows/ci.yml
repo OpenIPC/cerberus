@@ -3,12 +3,18 @@ name: ci
 on:
   push:
     branches: [master]
-    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
+
+# One run per branch: on pull requests a newer push cancels the older run; on master it waits
+# instead (only the newest waits), so a release is never cut off between deleting the old "latest"
+# and creating the new one. A manual run shares the push group.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && 'pull_request' || 'push' }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
   # Pull requests: a change to src/, the installers, the Makefile or ci/ comes with a new
@@ -76,10 +82,8 @@ jobs:
       matrix:
         arch: [arm, mipsel, aarch64, x86_64]
     steps:
+      # The version compiled into the binary is CERBERUS_VERSION in src/cerberus.c.
       - uses: actions/checkout@v4
-        with:
-          # git describe needs the tags: the version compiled into the binary comes from them.
-          fetch-depth: 0
 
       - name: Toolchain and mbedTLS cache
         uses: actions/cache@v4
@@ -98,10 +102,12 @@ jobs:
 
   release:
     name: release
-    # A v* tag publishes the binaries that were just built and tested — the same files, not a rebuild —
-    # together with the installer, the uninstaller (now a wrapper around it) and SHA256SUMS over all of them.
-    # Asset names carry no version: cameras fetch releases/latest/download/<name>.
-    if: startsWith(github.ref, 'refs/tags/v')
+    # The one release, "latest" (#32): published from master when CERBERUS_VERSION differs from the
+    # version in the title of the current "latest", with the binaries that were just built and tested
+    # (the same files, not a rebuild), the installer, the uninstaller (a wrapper around it), the license
+    # and SHA256SUMS over all of them. Asset names carry no version: cameras fetch
+    # releases/latest/download/<name>. A push without a new version publishes nothing.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
     needs: [lint, test, build]
     runs-on: ubuntu-latest
     permissions:
@@ -109,25 +115,62 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: A new version?
+        id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ver=$(sed -n 's/^#define CERBERUS_VERSION "\([^"]*\)"[[:space:]]*$/\1/p' src/cerberus.c)
+          [ "$(printf '%s\n' "$ver" | grep -c .)" = 1 ] || { echo "::error::expected one CERBERUS_VERSION"; exit 1; }
+          # "Not found" means there is no "latest" yet; any other failure stops here.
+          if prev=$(gh release view latest --repo "$GITHUB_REPOSITORY" --json name -q .name 2>err.txt); then
+            echo "exists=1" >> "$GITHUB_OUTPUT"
+          elif grep -qi 'not found' err.txt; then
+            prev=""
+            echo "exists=0" >> "$GITHUB_OUTPUT"
+          else
+            cat err.txt; echo "::error::cannot read the current \"latest\" release"; exit 1
+          fi
+          echo "latest is \"${prev:-none}\", src/cerberus.c says $ver"
+          echo "ver=$ver" >> "$GITHUB_OUTPUT"
+          [ "$prev" = "Cerberus $ver" ] || echo "new=true" >> "$GITHUB_OUTPUT"
+
       - uses: actions/download-artifact@v4
+        if: steps.ver.outputs.new == 'true'
         with:
           pattern: cerberus-*
           path: dist
           merge-multiple: true
 
-      - name: The binaries were built as this tag
+      - name: The binaries were built as this version
+        if: steps.ver.outputs.new == 'true'
+        env:
+          VER: ${{ steps.ver.outputs.ver }}
         run: |
           chmod +x dist/cerberus-*
           got=$(dist/cerberus-x86_64 --help 2>&1 | head -1 | cut -d' ' -f2)
-          echo "binary says $got, tag says ${GITHUB_REF_NAME#v}"
-          [ "$got" = "${GITHUB_REF_NAME#v}" ]
+          echo "binary says $got, src/cerberus.c says $VER"
+          [ "$got" = "$VER" ]
 
       - name: Lay out the release
+        if: steps.ver.outputs.new == 'true'
         run: ci/assemble.sh
 
       - name: Publish
+        if: steps.ver.outputs.new == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          VER: ${{ steps.ver.outputs.ver }}
+          EXISTS: ${{ steps.ver.outputs.exists }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
-            --repo "$GITHUB_REPOSITORY" --title "cerberus ${GITHUB_REF_NAME#v}" --generate-notes --verify-tag
+          url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+          cat > notes.md <<NOTES
+          Cerberus ${VER} (\`${GITHUB_SHA::7}\`): static binaries for arm, mipsel, aarch64 and x86_64, the installer and \`SHA256SUMS\`.
+
+          Install: \`curl -fsSL ${url}/releases/latest/download/install.sh | sh -s -- <token>\`. Changes: [CHANGELOG.md](${url}/blob/master/CHANGELOG.md); details: [README](${url}#readme).
+          NOTES
+          if [ "$EXISTS" = 1 ]; then
+            gh release delete latest --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+          fi
+          gh release create latest dist/* --repo "$GITHUB_REPOSITORY" --latest \
+            --target "$GITHUB_SHA" --title "Cerberus ${VER}" --notes-file notes.md

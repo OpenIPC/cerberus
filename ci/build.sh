@@ -22,8 +22,9 @@
 #        ci/build.sh arm mipsel               # a subset
 #        VERSION=1.2.0 OUT=dist ci/build.sh
 #
-# VERSION defaults to the nearest v* tag, without the v. It is compiled into the binary — it is what
-# the agent reports to the coordinator. With no tag in reach the binary keeps the version in src/cerberus.c.
+# The version compiled into the binary — what the agent reports to the coordinator — is
+# CERBERUS_VERSION in src/cerberus.c. VERSION overrides it for a test build only; releases never set it.
+# (It used to come from the nearest v* tag; there are no such tags any more, #32.)
 #
 # Output: $OUT/cerberus-<arch>. Names carry no version on purpose: the installer fetches
 # releases/latest/download/cerberus-<arch>, and that address must not change between releases.
@@ -41,8 +42,7 @@ TOOLCHAIN_RELEASE=stable-2025.08-1
 MBEDTLS_VERSION=3.6.7
 MBEDTLS_SHA256=a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6
 
-VERSION=${VERSION:-$(git describe --tags --match 'v[0-9]*' --dirty 2>/dev/null || true)}
-VERSION=${VERSION#v}
+VERSION=${VERSION:-}
 
 mkdir -p "$OUT" "$CACHE"
 

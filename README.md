@@ -70,7 +70,8 @@ the camera.
 
 ## Releases
 
-Every release carries one **static** binary per CPU architecture — static with musl and mbedTLS
+There is one release, [`latest`](https://github.com/OpenIPC/cerberus/releases/latest), titled
+`Cerberus <version>`; it is published again whenever the version changes. It carries one **static** binary per CPU architecture — static with musl and mbedTLS
 inside, so it does not matter which libc or which mbedTLS a given firmware has, or whether it has one
 at all:
 
@@ -306,12 +307,11 @@ makes its absence a failure, which is how CI runs it.
 ## CI and releases
 
 Every push and pull request runs shellcheck, the suite on both mbedTLS generations, and the four
-release builds. A `v*` tag publishes those same binaries, with the installers, the init script and
-`SHA256SUMS`, as a GitHub release; the version compiled into the binaries comes from the tag.
-
-```sh
-git tag v0.2.0 && git push origin v0.2.0
-```
+release builds. When a push to `master` brings a new `CERBERUS_VERSION` (`src/cerberus.c`), CI
+replaces the one release, `latest`, with those same binaries, the installers, the license and
+`SHA256SUMS`, titled `Cerberus <version>`; a push without a new version publishes nothing. The
+version compiled into the binaries is `CERBERUS_VERSION` itself; there are no `v*` tags. To release:
+bump the version and add its `CHANGELOG.md` section in the pull request, then merge it.
 
 Versions are `MAJOR.MINOR.PATCH` (`CERBERUS_VERSION` in `src/cerberus.c`): PATCH for fixes and
 small changes, MINOR for a new feature, MAJOR for an incompatible change or a large update, only
