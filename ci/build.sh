@@ -14,9 +14,11 @@
 #
 # Everything happens in a Debian container, so the host needs only Docker: the Bootlin musl
 # toolchain and the mbedTLS source are downloaded once into .cache/ and checked against pinned
-# sha256 sums. Each binary is then *run* under QEMU in the same container — `--help`, and a keypair
-# compared with what `wg pubkey` derives — because a binary for the right ELF machine can still die
-# on the first instruction its CPU does not have, and that is invisible to `file`.
+# sha256 sums. The container is debian:bookworm-slim, or CERBERUS_BUILD_IMAGE; the build packages
+# are installed only if the image lacks them. Each binary is then *run* under QEMU in the same
+# container — `--help`, and a keypair compared with what `wg pubkey` derives — because a binary for
+# the right ELF machine can still die on the first instruction its CPU does not have, and that is
+# invisible to `file`.
 #
 # Usage: ci/build.sh                          # all four
 #        ci/build.sh arm mipsel               # a subset
@@ -85,9 +87,17 @@ for arch in "${ARCHES[@]}"; do
 		"$IMAGE" bash -s <<'BUILD'
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq >/dev/null
-apt-get install -y -qq --no-install-recommends ca-certificates curl xz-utils bzip2 make file \
-	qemu-user-static wireguard-tools openssl >/dev/null
+# The packages come from apt only when a tool is missing: debian:bookworm-slim has none of
+# them, an image given as CERBERUS_BUILD_IMAGE may carry them all and then builds without a
+# round-trip to the Debian mirrors.
+have=1
+for tool in curl xz bzip2 make file wg openssl $QEMU; do command -v "$tool" >/dev/null || have=0; done
+[ -f /etc/ssl/certs/ca-certificates.crt ] || have=0
+if [ "$have" = 0 ]; then
+	apt-get update -qq >/dev/null
+	apt-get install -y -qq --no-install-recommends ca-certificates curl xz-utils bzip2 make file \
+		qemu-user-static wireguard-tools openssl >/dev/null
+fi
 
 fetch() { # fetch <url> <sha256> <file in /cache>
 	if [ ! -f "/cache/$3" ] || ! echo "$2  /cache/$3" | sha256sum -c --quiet - 2>/dev/null; then
