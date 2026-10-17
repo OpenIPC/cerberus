@@ -11,6 +11,19 @@ permissions:
   contents: read
 
 jobs:
+  # Pull requests: a change to src/, the installers, the Makefile or ci/ comes with a new
+  # CERBERUS_VERSION (MAJOR.MINOR.PATCH) and its CHANGELOG.md section (#33). The checkout is the
+  # merge commit; its first parent is the base it was made from.
+  version:
+    name: version bump
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: .github/check-version.sh HEAD^1
+
   lint:
     name: shellcheck
     runs-on: ubuntu-latest

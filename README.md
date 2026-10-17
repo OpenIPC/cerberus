@@ -313,6 +313,13 @@ release builds. A `v*` tag publishes those same binaries, with the installers, t
 git tag v0.2.0 && git push origin v0.2.0
 ```
 
+Versions are `MAJOR.MINOR.PATCH` (`CERBERUS_VERSION` in `src/cerberus.c`): PATCH for fixes and
+small changes, MINOR for a new feature, MAJOR for an incompatible change or a large update, only
+when the maintainer decides. A pull request that changes `src/`, the installers, the `Makefile` or
+`ci/` raises the version as its last commit before the merge, together with its `CHANGELOG.md`
+section; docs, tests and the workflows in `.github/` do not. CI checks this on every pull request
+(`.github/check-version.sh`).
+
 ## License
 
 [The Prosperity Public License 3.0.0](LICENSE.md): free for noncommercial use, with a 30-day trial
