@@ -38,7 +38,7 @@ lint fails with SC2275.
 Tests and release binaries already run in containers through the repository's own scripts:
 
 ```sh
-tests/run.sh                                            # alpine:3.20, musl + mbedTLS 3.x
+tests/run.sh                                            # Alpine (default image in tests/run.sh), musl + mbedTLS 3.x
 CERBERUS_TEST_IMAGE=debian:bookworm-slim tests/run.sh   # glibc + mbedTLS 2.28
 ci/build.sh arm                                         # static musl binary; all four without arguments
 ```
