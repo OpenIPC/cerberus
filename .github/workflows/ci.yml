@@ -217,6 +217,8 @@ jobs:
           # (one awk, no pipe: under pipefail a head closing the pipe early would fail the step)
           changes=$(awk -v h="## ${VER} — " 'index($0, h) == 1 {f = 1; next} /^## / && f {exit}
             f && (s || $0 != "") {s = 1; if (++n > 15) exit; print}' CHANGELOG.md)
+          # Telegram takes 4096 characters per message: keep the excerpt well below that
+          [ "${#changes}" -le 3000 ] || changes="${changes:0:3000}…"
           text=$(printf 'Cerberus %s\nCommit: %s\nTime: %s\n\n%s\n\nInstall: curl -fsSL %s/releases/latest/download/install.sh | sh -s -- <token>\n%s/releases/latest' \
             "$VER" "${GITHUB_SHA::7}" "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" "$changes" "$url" "$url")
           HTTP=$(curl -sS -o tg.json -w '%{http_code}' "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
