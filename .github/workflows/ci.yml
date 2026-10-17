@@ -190,9 +190,11 @@ jobs:
             gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/latest" -f sha="$GITHUB_SHA" -F force=true >/dev/null
             gh release edit latest --repo "$GITHUB_REPOSITORY" --latest --title "Cerberus ${VER}" --notes-file notes.md
           else
-            # a "latest" tag left without its release would keep its old commit under --target
-            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/latest" -f sha="$GITHUB_SHA" -F force=true \
-              >/dev/null 2>&1 || true
+            # a "latest" tag left without its release would keep its old commit under --target:
+            # move it (a failure stops the job), or create the release when there is no such tag
+            if gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/latest" >/dev/null 2>&1; then
+              gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/latest" -f sha="$GITHUB_SHA" -F force=true >/dev/null
+            fi
             gh release create latest dist/* --repo "$GITHUB_REPOSITORY" --latest \
               --target "$GITHUB_SHA" --title "Cerberus ${VER}" --notes-file notes.md
           fi
