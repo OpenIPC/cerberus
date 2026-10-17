@@ -10,8 +10,8 @@ permissions:
   contents: read
 
 # One run per branch: on pull requests a newer push cancels the older run; on master it waits
-# instead (only the newest waits), so a release is never cut off between deleting the old "latest"
-# and creating the new one. A manual run shares the push group.
+# instead (only the newest waits), so a release is never cut off halfway. A manual run shares the
+# push group.
 concurrency:
   group: ci-${{ github.event_name == 'pull_request' && 'pull_request' || 'push' }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
@@ -106,7 +106,9 @@ jobs:
     # version in the title of the current "latest", with the binaries that were just built and tested
     # (the same files, not a rebuild), the installer, the uninstaller (a wrapper around it), the license
     # and SHA256SUMS over all of them. Asset names carry no version: cameras fetch
-    # releases/latest/download/<name>. A push without a new version publishes nothing.
+    # releases/latest/download/<name>, so "latest" is updated in place, never deleted: the files are
+    # replaced, the tag is moved to the built commit, then the title and notes follow. A push without
+    # a new version publishes nothing, and only the head of master is published.
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
     needs: [lint, test, build]
     runs-on: ubuntu-latest
@@ -120,6 +122,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Only the head of master: a rerun of an older run must not roll the cameras back.
+          head=$(git ls-remote origin refs/heads/master | cut -f 1)
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "::notice::master is at ${head:0:7} now, not ${GITHUB_SHA::7}: not published"; exit 0
+          fi
           ver=$(sed -n 's/^#define CERBERUS_VERSION "\([^"]*\)"[[:space:]]*$/\1/p' src/cerberus.c)
           [ "$(printf '%s\n' "$ver" | grep -c .)" = 1 ] || { echo "::error::expected one CERBERUS_VERSION"; exit 1; }
           # "Not found" means there is no "latest" yet; any other failure stops here.
@@ -170,7 +177,14 @@ jobs:
           Install: \`curl -fsSL ${url}/releases/latest/download/install.sh | sh -s -- <token>\`. Changes: [CHANGELOG.md](${url}/blob/master/CHANGELOG.md); details: [README](${url}#readme).
           NOTES
           if [ "$EXISTS" = 1 ]; then
-            gh release delete latest --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+            # in place: files first, then the tag, then the title and notes
+            gh release upload latest dist/* --repo "$GITHUB_REPOSITORY" --clobber
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/latest" -f sha="$GITHUB_SHA" -F force=true >/dev/null
+            gh release edit latest --repo "$GITHUB_REPOSITORY" --latest --title "Cerberus ${VER}" --notes-file notes.md
+          else
+            # a "latest" tag left without its release would keep its old commit under --target
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/latest" -f sha="$GITHUB_SHA" -F force=true \
+              >/dev/null 2>&1 || true
+            gh release create latest dist/* --repo "$GITHUB_REPOSITORY" --latest \
+              --target "$GITHUB_SHA" --title "Cerberus ${VER}" --notes-file notes.md
           fi
-          gh release create latest dist/* --repo "$GITHUB_REPOSITORY" --latest \
-            --target "$GITHUB_SHA" --title "Cerberus ${VER}" --notes-file notes.md
