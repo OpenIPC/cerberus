@@ -87,6 +87,8 @@ fw_setenv cerberus_enrollment_token tok_...
 Версии в именах файлов нет специально: `releases/latest/download/<имя>` всегда ведёт на текущий
 релиз.
 
+О каждой новой версии сообщается в Telegram-каналах OpenIPC ([наши каналы](https://openipc.org/our-channels)).
+
 История изменений по версиям — в [CHANGELOG.md](CHANGELOG.md).
 
 | бинарь             | байт    |
