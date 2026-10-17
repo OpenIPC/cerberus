@@ -86,6 +86,8 @@ fw_setenv cerberus_enrollment_token tok_...
 Версии в именах файлов нет специально: `releases/latest/download/<имя>` всегда ведёт на текущий
 релиз.
 
+История изменений по версиям — в [CHANGELOG.md](CHANGELOG.md).
+
 | бинарь             | байт    |
 |--------------------|---------|
 | `cerberus-arm`     | 304 300 |
