@@ -79,6 +79,8 @@ fw_setenv cerberus_enrollment_token tok_...
 
 文件名中故意不带版本号：`releases/latest/download/<文件名>` 始终指向最新发布。
 
+各版本的变更记录见 [CHANGELOG.md](CHANGELOG.md)。
+
 | 二进制文件         | 字节    |
 |--------------------|---------|
 | `cerberus-arm`     | 304 300 |
