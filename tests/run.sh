@@ -10,7 +10,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-IMAGE=${CERBERUS_TEST_IMAGE:-alpine:3.20}
+IMAGE=${CERBERUS_TEST_IMAGE:-alpine:3.22}
 
 host_path() {
 	case "$(uname -s)" in
