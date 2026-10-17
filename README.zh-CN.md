@@ -262,6 +262,11 @@ CERBERUS_TEST_IMAGE=debian:bookworm-slim tests/run.sh      # glibc + mbedTLS 2.2
 git tag v0.2.0 && git push origin v0.2.0
 ```
 
+版本号格式为 `MAJOR.MINOR.PATCH`（`src/cerberus.c` 中的 `CERBERUS_VERSION`）：PATCH 表示修复和小改动，MINOR
+表示新功能，MAJOR 表示不兼容的变更或大规模更新，仅由维护者决定。修改 `src/`、安装脚本、`Makefile` 或 `ci/`
+的 PR 需要在合并前的最后一个提交中提升版本号，并在 `CHANGELOG.md` 中添加对应章节；仅修改文档、测试或
+`.github/` 中工作流的 PR 不提升版本号。CI 会在每个 PR 中检查这一点（`.github/check-version.sh`）。
+
 ## 许可证
 
 [The Prosperity Public License 3.0.0](LICENSE.md)：非商业用途免费，商业用途可试用 30 天。完整条款见
