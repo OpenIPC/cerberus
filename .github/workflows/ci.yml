@@ -4,6 +4,8 @@ on:
   push:
     branches: [master]
   pull_request:
+    # labeled / unlabeled: the version check reads the no-release label
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_dispatch:
 
 permissions:
@@ -29,6 +31,9 @@ jobs:
         with:
           fetch-depth: 0
       - run: .github/check-version.sh HEAD^1
+        env:
+          # a change that leaves the binaries as they are may skip the new version
+          NO_RELEASE: ${{ contains(github.event.pull_request.labels.*.name, 'no-release') }}
 
   lint:
     name: shellcheck

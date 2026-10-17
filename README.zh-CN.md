@@ -58,6 +58,8 @@ fw_setenv cerberus_enrollment_token tok_...
 /etc/init.d/S99cerberus restart
 ```
 
+旧的说明会从发布中下载 `S99cerberus`，现在会得到 404：该文件已不再发布。请改为运行 `cerberus init-script`，如上所示。
+
 在面板中为单台摄像机签发的令牌会把摄像机绑定到签发者名下。使用批量令牌时，代理会打印认领码
 （`cerberus status` 也会显示），在面板中输入该认领码即可认领摄像机。
 
@@ -267,6 +269,9 @@ CERBERUS_TEST_IMAGE=debian:bookworm-slim tests/run.sh      # glibc + mbedTLS 2.2
 表示新功能，MAJOR 表示不兼容的变更或大规模更新，仅由维护者决定。修改 `src/`、安装脚本、`Makefile` 或 `ci/`
 的 PR 需要在合并前的最后一个提交中提升版本号，并在 `CHANGELOG.md` 中添加对应章节；仅修改文档、测试或
 `.github/` 中工作流的 PR 不提升版本号。CI 会在每个 PR 中检查这一点（`.github/check-version.sh`）。
+
+不改变二进制文件的代码或构建修改（整理构建脚本、注释）可以改用 `no-release` 标签：不提升版本号，也不发布。
+没有按版本的发布可供固定：回滚就是 revert 加上一个新版本号。
 
 ## 许可证
 

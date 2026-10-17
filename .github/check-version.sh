@@ -9,6 +9,9 @@
 # base branch does not have yet.  src/, the installers, the Makefile and ci/
 # count as code or build (a new version is also what publishes a release,
 # #32); docs, tests/ and the workflows in .github/ need no new version.
+# NO_RELEASE=true (the pull request's `no-release` label) lets a change to
+# the code or the build through without a new version, for changes that
+# leave the binaries as they are (a build-script tidy-up, a comment).
 #
 # Usage: .github/check-version.sh [BASE]   (default origin/master; CI passes
 # HEAD^1, the base side of the pull request's merge commit)
@@ -38,6 +41,12 @@ old=$(git show "$base:$header" | ver "$base")
 changed=$(git diff --name-only "$base"...HEAD -- $code ':(exclude,glob)**/*.md')
 
 if [ "$new" = "$old" ]; then
+	if [ -n "$changed" ] && [ "${NO_RELEASE:-}" = true ]; then
+		echo "::notice::code or build changed, CERBERUS_VERSION stays $old: the no-release" \
+			"label says the binaries do not change"
+		echo "$changed"
+		exit 0
+	fi
 	if [ -n "$changed" ]; then
 		echo "::error::code or build changed, CERBERUS_VERSION is still $old:" \
 			"bump PATCH (fix) or MINOR (feature) and add its CHANGELOG.md section"

@@ -68,7 +68,7 @@
 #define sha256_once(in, len, out) mbedtls_sha256((in), (len), (out), 0)
 #endif
 
-/* Release builds pass the tag in (`make VERSION=...`); a plain `make` reports the source version. */
+/* The version of every build, release builds included (#32); `make VERSION=...` overrides it for a test build. */
 #ifndef CERBERUS_VERSION
 #define CERBERUS_VERSION "0.3.1"
 #endif
