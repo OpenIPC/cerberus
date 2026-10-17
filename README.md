@@ -89,6 +89,8 @@ at all:
 Asset names carry no version on purpose: `releases/latest/download/<name>` always points at the
 current release.
 
+Every new version is announced in the OpenIPC Telegram channels ([our channels](https://openipc.org/our-channels)).
+
 The change history of every version is in [CHANGELOG.md](CHANGELOG.md).
 
 | binary             | bytes   |
