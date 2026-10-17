@@ -140,7 +140,15 @@ jobs:
           fi
           echo "latest is \"${prev:-none}\", src/cerberus.c says $ver"
           echo "ver=$ver" >> "$GITHUB_OUTPUT"
-          [ "$prev" = "Cerberus $ver" ] || echo "new=true" >> "$GITHUB_OUTPUT"
+          if [ "$prev" != "Cerberus $ver" ]; then
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          else
+            # same version: publish again only if a publication was cut off and files are missing
+            have=$(gh release view latest --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name')
+            for f in cerberus-arm cerberus-mipsel cerberus-aarch64 cerberus-x86_64 install.sh uninstall.sh LICENSE.md SHA256SUMS; do
+              printf '%s\n' "$have" | grep -qx "$f" || { echo "latest lacks $f: publishing again"; echo "new=true" >> "$GITHUB_OUTPUT"; break; }
+            done
+          fi
 
       - uses: actions/download-artifact@v4
         if: steps.ver.outputs.new == 'true'
