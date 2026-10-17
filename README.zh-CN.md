@@ -82,7 +82,7 @@ fw_setenv cerberus_enrollment_token tok_...
 
 文件名中故意不带版本号：`releases/latest/download/<文件名>` 始终指向最新发布。
 
-每个新版本都会在 OpenIPC 的 Telegram 频道中发布（[我们的频道](https://openipc.org/our-channels)）。
+每个新版本的二进制文件也会发布到 OpenIPC 的 Telegram 频道（[我们的频道](https://openipc.org/our-channels)），用于存档和测试下载。
 
 各版本的变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 

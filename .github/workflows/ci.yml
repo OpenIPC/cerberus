@@ -147,7 +147,7 @@ jobs:
           echo "ver=$ver" >> "$GITHUB_OUTPUT"
           if [ "$prev" != "Cerberus $ver" ]; then
             echo "new=true" >> "$GITHUB_OUTPUT"
-            echo "announce=true" >> "$GITHUB_OUTPUT"   # a new version: Telegram (#34)
+            echo "announce=true" >> "$GITHUB_OUTPUT"   # a new version: binaries to Telegram (#40)
           else
             # same version: publish again only if a publication was cut off and files are missing
             have=$(gh release view latest --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name')
@@ -205,8 +205,10 @@ jobs:
               --target "$GITHUB_SHA" --title "Cerberus ${VER}" --notes-file notes.md
           fi
 
-      # A new version (not a re-publication of the same one) goes to the OpenIPC Telegram dev
-      # channel (#34). Organization secrets; a failed post is a warning, not a failed release.
+      # The binaries of a new version (not a re-publication of the same one) go to the OpenIPC
+      # Telegram dev channel as files, for the archive and test downloads: one post
+      # (sendMediaGroup), a short caption, no text from CHANGELOG.md (#40). Organization secrets;
+      # a failed upload is a warning, not a failed release.
       - name: Telegram
         if: steps.ver.outputs.announce == 'true'
         env:
@@ -215,19 +217,19 @@ jobs:
           VER: ${{ steps.ver.outputs.ver }}
         run: |
           if [ -z "$TG_TOKEN" ] || [ -z "$TG_CHANNEL" ]; then
-            echo "::warning::Telegram secrets are not available, version not announced"; exit 0
+            echo "::warning::Telegram secrets are not available, binaries not posted"; exit 0
           fi
-          url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
-          # the CHANGELOG.md section of this version, without its heading
-          # (one awk, no pipe: under pipefail a head closing the pipe early would fail the step)
-          changes=$(awk -v h="## ${VER} — " 'index($0, h) == 1 {f = 1; next} /^## / && f {exit}
-            f && (s || $0 != "") {s = 1; if (++n > 15) exit; print}' CHANGELOG.md)
-          # Telegram takes 4096 characters per message: keep the excerpt well below that
-          [ "${#changes}" -le 3000 ] || changes="${changes:0:3000}…"
-          text=$(printf 'Cerberus %s\nCommit: %s\nTime: %s\n\n%s\n\nInstall: curl -fsSL %s/releases/latest/download/install.sh | sh -s -- <token>\n%s/releases/latest' \
-            "$VER" "${GITHUB_SHA::7}" "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" "$changes" "$url" "$url")
-          HTTP=$(curl -sS -o tg.json -w '%{http_code}' "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-            --data-urlencode "chat_id=${TG_CHANNEL}" --data-urlencode "text=${text}" \
-            --data "disable_web_page_preview=true") || HTTP=000
+          caption=$(printf 'Cerberus %s for Linux\nCommit: %s\nTime: %s\n\n%s' "$VER" "${GITHUB_SHA::7}" \
+            "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/latest")
+          files=(dist/cerberus-*)
+          media='[]' form=()
+          for i in "${!files[@]}"; do
+            item=$(jq -cn --arg m "attach://f$i" '{type: "document", media: $m}')
+            [ "$i" -eq $(( ${#files[@]} - 1 )) ] && item=$(jq -c --arg c "$caption" '. + {caption: $c}' <<< "$item")
+            media=$(jq -c --argjson it "$item" '. + [$it]' <<< "$media")
+            form+=(-F "f$i=@${files[$i]}")
+          done
+          HTTP=$(curl -sS -o tg.json -w '%{http_code}' "https://api.telegram.org/bot${TG_TOKEN}/sendMediaGroup" \
+            -F chat_id="$TG_CHANNEL" -F media="$media" "${form[@]}") || HTTP=000
           echo "Telegram response: $HTTP"
-          [ "$HTTP" = 200 ] || echo "::warning::Telegram post failed (HTTP $HTTP)"
+          [ "$HTTP" = 200 ] || echo "::warning::Telegram upload failed (HTTP $HTTP): $(cat tg.json 2>/dev/null)"

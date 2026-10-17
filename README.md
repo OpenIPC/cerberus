@@ -92,7 +92,7 @@ at all:
 Asset names carry no version on purpose: `releases/latest/download/<name>` always points at the
 current release.
 
-Every new version is announced in the OpenIPC Telegram channels ([our channels](https://openipc.org/our-channels)).
+The binaries of every new version are also posted to the OpenIPC Telegram channel ([our channels](https://openipc.org/our-channels)), for the archive and test downloads.
 
 The change history of every version is in [CHANGELOG.md](CHANGELOG.md).
 
