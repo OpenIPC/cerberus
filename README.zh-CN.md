@@ -268,8 +268,8 @@ CERBERUS_TEST_IMAGE=debian:bookworm-slim tests/run.sh      # glibc + mbedTLS 2.2
 版本号格式为 `MAJOR.MINOR.PATCH`（`src/cerberus.c` 中的 `CERBERUS_VERSION`）：PATCH 表示修复和小改动，MINOR
 表示新功能，MAJOR 表示不兼容的变更或大规模更新，仅由维护者决定。修改 `src/`、安装脚本、`Makefile`、`ci/`
 或 CI 工作流 `.github/workflows/ci.yml` 的 PR 需要在合并前的最后一个提交中提升版本号，并在 `CHANGELOG.md`
-中添加对应章节；仅修改文档、测试或 `.github/` 中其他文件的 PR 不提升版本号。CI 会在每个 PR 中检查这一点
-（`.github/check-version.sh`）。
+中添加对应章节；仅修改文档、测试或 `.github/` 中其他文件的 PR 不提升版本号。独立的工作流 `.github/workflows/version.yml` 会在每个 PR 中检查这一点
+（`.github/check-version.sh`）；添加或移除标签只会重新运行这项检查。
 
 不改变二进制文件的代码或构建修改（整理构建脚本、注释、工作流中测试或发布部分的修改）可以改用 `no-release`
 标签：不提升版本号，也不发布。

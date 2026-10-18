@@ -323,7 +323,8 @@ small changes, MINOR for a new feature, MAJOR for an incompatible change or a la
 when the maintainer decides. A pull request that changes `src/`, the installers, the `Makefile`,
 `ci/` or the CI workflow `.github/workflows/ci.yml` raises the version as its last commit before
 the merge, together with its `CHANGELOG.md` section; docs, tests and the rest of `.github/` do not.
-CI checks this on every pull request (`.github/check-version.sh`).
+A workflow of its own, `.github/workflows/version.yml`, checks this on every pull request
+(`.github/check-version.sh`); adding or removing a label re-runs only that check.
 
 A change to the code or the build that leaves the binaries as they are (a build-script
 tidy-up, a comment, a workflow edit to the tests or the publication) can carry the `no-release`

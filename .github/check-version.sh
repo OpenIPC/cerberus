@@ -10,14 +10,16 @@
 # and the CI workflow .github/workflows/ci.yml count as code or build (a new
 # version is also what publishes a release, #32); the script cannot tell the
 # build steps of the workflow from its tests and publication, so all of it
-# counts (#42).  Docs, tests/ and the rest of .github/ need no new version.
+# counts (#42).  Docs, tests/ and the rest of .github/ (version.yml, which
+# runs this check, included) need no new version.
 # NO_RELEASE=true (the pull request's `no-release` label) lets a change to
 # the code or the build through without a new version, for changes that
 # leave the binaries as they are (a build-script tidy-up, a comment, a
 # workflow edit to the tests or the publication).
 #
-# Usage: .github/check-version.sh [BASE]   (default origin/master; CI passes
-# HEAD^1, the base side of the pull request's merge commit)
+# Usage: .github/check-version.sh [BASE]   (default origin/master; the
+# version.yml workflow passes HEAD^1, the base side of the pull request's
+# merge commit, and NO_RELEASE from the label)
 #
 
 set -eu

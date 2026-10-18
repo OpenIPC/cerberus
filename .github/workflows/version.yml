@@ -1,0 +1,35 @@
+# version.yml — the version check of pull requests (#33, #39, #42, #44)
+#
+# A change to src/, the installers, the Makefile, ci/ or the CI workflow ci.yml comes with a new
+# CERBERUS_VERSION (MAJOR.MINOR.PATCH) and its CHANGELOG.md section, unless the no-release label
+# says the binaries stay as they are. A workflow of its own: adding or removing a label re-runs
+# this check, not the whole CI.
+
+name: version
+
+on:
+  pull_request:
+    # labeled / unlabeled: the check reads the no-release label
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+# a newer event of the same pull request cancels the older check
+concurrency:
+  group: version-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  version:
+    name: version bump
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # The checkout is the merge commit; its first parent is the base it was made from.
+      - run: .github/check-version.sh HEAD^1
+        env:
+          # a change that leaves the binaries as they are may skip the new version
+          NO_RELEASE: ${{ contains(github.event.pull_request.labels.*.name, 'no-release') }}
