@@ -4,8 +4,6 @@ on:
   push:
     branches: [master]
   pull_request:
-    # labeled / unlabeled: the version check reads the no-release label
-    types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_dispatch:
 
 permissions:
@@ -19,22 +17,8 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
-  # Pull requests: a change to src/, the installers, the Makefile, ci/ or this workflow (#42)
-  # comes with a new CERBERUS_VERSION (MAJOR.MINOR.PATCH) and its CHANGELOG.md section (#33), or
-  # with the no-release label when the binaries stay as they are (#39). The checkout is the
-  # merge commit; its first parent is the base it was made from.
-  version:
-    name: version bump
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - run: .github/check-version.sh HEAD^1
-        env:
-          # a change that leaves the binaries as they are may skip the new version
-          NO_RELEASE: ${{ contains(github.event.pull_request.labels.*.name, 'no-release') }}
+  # The version check of pull requests (a new CERBERUS_VERSION, or the no-release label) is
+  # .github/workflows/version.yml (#44): a label change re-runs that check, not this workflow.
 
   lint:
     name: shellcheck
