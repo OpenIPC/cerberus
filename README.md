@@ -320,13 +320,14 @@ bump the version and add its `CHANGELOG.md` section in the pull request, then me
 
 Versions are `MAJOR.MINOR.PATCH` (`CERBERUS_VERSION` in `src/cerberus.c`): PATCH for fixes and
 small changes, MINOR for a new feature, MAJOR for an incompatible change or a large update, only
-when the maintainer decides. A pull request that changes `src/`, the installers, the `Makefile` or
-`ci/` raises the version as its last commit before the merge, together with its `CHANGELOG.md`
-section; docs, tests and the workflows in `.github/` do not. CI checks this on every pull request
-(`.github/check-version.sh`).
+when the maintainer decides. A pull request that changes `src/`, the installers, the `Makefile`,
+`ci/` or the CI workflow `.github/workflows/ci.yml` raises the version as its last commit before
+the merge, together with its `CHANGELOG.md` section; docs, tests and the rest of `.github/` do not.
+CI checks this on every pull request (`.github/check-version.sh`).
 
 A change to the code or the build that leaves the binaries as they are (a build-script
-tidy-up, a comment) can carry the `no-release` label instead: no new version, no release.
+tidy-up, a comment, a workflow edit to the tests or the publication) can carry the `no-release`
+label instead: no new version, no release.
 There are no versioned releases to pin: a rollback is a revert plus a new version.
 
 ## License

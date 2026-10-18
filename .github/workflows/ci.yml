@@ -19,8 +19,9 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
-  # Pull requests: a change to src/, the installers, the Makefile or ci/ comes with a new
-  # CERBERUS_VERSION (MAJOR.MINOR.PATCH) and its CHANGELOG.md section (#33). The checkout is the
+  # Pull requests: a change to src/, the installers, the Makefile, ci/ or this workflow (#42)
+  # comes with a new CERBERUS_VERSION (MAJOR.MINOR.PATCH) and its CHANGELOG.md section (#33), or
+  # with the no-release label when the binaries stay as they are (#39). The checkout is the
   # merge commit; its first parent is the base it was made from.
   version:
     name: version bump
