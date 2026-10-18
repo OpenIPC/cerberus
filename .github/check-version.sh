@@ -6,12 +6,15 @@
 # but not CERBERUS_VERSION in src/cerberus.c.  A new version must be
 # MAJOR.MINOR.PATCH without leading zeros, greater than the base one, and
 # have its section in CHANGELOG.md ("## <version> — YYYY-MM-DD") that the
-# base branch does not have yet.  src/, the installers, the Makefile and ci/
-# count as code or build (a new version is also what publishes a release,
-# #32); docs, tests/ and the workflows in .github/ need no new version.
+# base branch does not have yet.  src/, the installers, the Makefile, ci/
+# and the CI workflow .github/workflows/ci.yml count as code or build (a new
+# version is also what publishes a release, #32); the script cannot tell the
+# build steps of the workflow from its tests and publication, so all of it
+# counts (#42).  Docs, tests/ and the rest of .github/ need no new version.
 # NO_RELEASE=true (the pull request's `no-release` label) lets a change to
 # the code or the build through without a new version, for changes that
-# leave the binaries as they are (a build-script tidy-up, a comment).
+# leave the binaries as they are (a build-script tidy-up, a comment, a
+# workflow edit to the tests or the publication).
 #
 # Usage: .github/check-version.sh [BASE]   (default origin/master; CI passes
 # HEAD^1, the base side of the pull request's merge commit)
@@ -21,7 +24,7 @@ set -eu
 
 base=${1:-origin/master}
 header=src/cerberus.c
-code="src install.sh uninstall.sh Makefile ci"
+code="src install.sh uninstall.sh Makefile ci .github/workflows/ci.yml"
 
 # The one CERBERUS_VERSION definition (comments and other text do not count).
 ver() {
