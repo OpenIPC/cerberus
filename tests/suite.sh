@@ -105,6 +105,8 @@ f=${FAKE_UBOOT:?}
 touch "$f"
 k=$1
 shift
+# FAKE_UBOOT_FULL=<key>: an environment with no room left for that one, as a real one runs out.
+if [ $# -gt 0 ] && [ "$k" = "${FAKE_UBOOT_FULL:-}" ]; then echo "Error: environment overflow, $k not set" >&2; exit 1; fi
 awk -v k="$k" 'index($0, k "=") != 1' "$f" >"$f.tmp"
 [ $# -gt 0 ] && printf '%s=%s\n' "$k" "$*" >>"$f.tmp"
 mv "$f.tmp" "$f"
@@ -272,7 +274,11 @@ check "and its fingerprint, as sha256sum of the raw key reads it" \
 	"$(echo "$PUB" | base64 -d | sha256sum | cut -c1-32)"
 # The vector the coordinator's KeyFingerprintTests pins too: two implementations of one format, and a
 # drift between them would show an honest camera as a substituted one.
-printf 'cerberus_device_pubkey=HIgo9xNzJMWLKASShiTqIybxZ0U3wGLiUeJ1PKf8ykw=\n' >vector.env
+BINDING=$(echo "$PRIV" | base64 -d | sha256sum | cut -c1-16)
+check "the cached public key is bound to the private key" \
+	"$(sv cerberus_device_pubkey enrolled.env)" "$PUB:$BINDING"
+printf 'cerberus_device_key=%s\ncerberus_device_pubkey=HIgo9xNzJMWLKASShiTqIybxZ0U3wGLiUeJ1PKf8ykw=:%s\n' \
+	"$PRIV" "$BINDING" >vector.env
 check "fingerprint: the cloud's test vector" \
 	"$(CERBERUS_STORE=file:$T/vector.env $A status 2>/dev/null | sed -n 's/^fingerprint  *//p')" \
 	"9946 8313 5dcd 688b cf07 0f57 1e50 618f"
@@ -280,6 +286,15 @@ grep -v '^cerberus_device_pubkey=' enrolled.env >oldkey.env
 check "a key from an older agent: no fingerprint until the next start, and no key derived for it" \
 	"$(CERBERUS_STORE=file:$T/oldkey.env $A status 2>/dev/null | sed -n 's/^fingerprint  *//p')$(sv cerberus_device_pubkey oldkey.env)" \
 	"- (known after the next start)"
+# A private key replaced by hand leaves a cache that belongs to the old one: status must not show the
+# old key's fingerprint as this camera's.
+sed "s|^cerberus_device_key=.*|cerberus_device_key=$(wg genkey)|" enrolled.env >swapped.env
+check "a key replaced by hand: the old fingerprint is not shown" \
+	"$(CERBERUS_STORE=file:$T/swapped.env $A status 2>/dev/null | sed -n 's/^fingerprint  *//p')" \
+	"- (known after the next start)"
+grep -v '^cerberus_device_key=' enrolled.env >nokey.env
+check "no private key: no fingerprint, whatever the cache says" \
+	"$(CERBERUS_STORE=file:$T/nokey.env $A status 2>/dev/null | sed -n 's/^\(public key\|fingerprint\)  *//p')" "-"
 
 # The probe pings the hub in the network the interface is in (#7): with a networkSubnet and no
 # hubOverlayIp, the first address of that subnet — not of CERBERUS_SUBNET's default pool.
@@ -297,6 +312,17 @@ check "wg set: key, hub, both allowed-ips, keepalive" "$(yes_if grep -qF \
 check "address with the tenant's prefix" "$(yes_if grep -qF "dry-run: ip address replace $OVERLAY/24 dev cbr0" up.log)" "yes"
 check "a route to a hub outside the subnet" "$(yes_if grep -qF "dry-run: ip route replace $HUB_IP/32 dev cbr0" up.log)" "yes"
 check "the key file does not outlive the call" "$(yes_if test -e $T/.wg.key)" "no"
+
+# The public-key cache is a cache: a U-Boot environment with no room for it must not stop a camera
+# that has everything else it needs.
+FULL=$T/full-uboot.env
+grep -v '^cerberus_device_pubkey=' enrolled.env >$FULL
+FAKE_UBOOT_FULL=cerberus_device_pubkey uboot $FULL $A up >full.log 2>&1
+check "a full U-Boot env: up still succeeds" "$?" "0"
+check "and programs the interface" "$(yes_if grep -qF "dry-run: wg set cbr0 private-key" full.log)" "yes"
+check "and says what it could not keep" "$(yes_if grep -q 'fw_setenv cerberus_device_pubkey failed' full.log)" "yes"
+check "status then says the fingerprint is not known yet" \
+	"$(uboot $FULL $A status 2>/dev/null | sed -n 's/^fingerprint  *//p')" "- (known after the next start)"
 
 # ------------------------------------------------------------------- back-channel
 section "heartbeat and the back-channel"
@@ -432,7 +458,8 @@ fi
 section "the rename: streq_* keys and STREQ_* variables"
 # A camera installed before the rename: its whole identity under the old names, in U-Boot env.
 OLD=$T/old-uboot.env
-sed -n 's/^cerberus_\(.*\)=\(.*\)$/streq_\1=\2/p' enrolled.env >$OLD
+# No device_pubkey: an install from before the rename predates that key too.
+grep -v '^cerberus_device_pubkey=' enrolled.env | sed -n 's/^cerberus_\(.*\)=\(.*\)$/streq_\1=\2/p' >$OLD
 uboot $OLD $A status >mig.out 2>mig.log
 check "moves its identity to cerberus_*" "$(ub $OLD cerberus_device_key)" "$PRIV"
 check "and its enrolment" "$(ub $OLD cerberus_node_id)" "$NODE"
