@@ -141,7 +141,7 @@ fw_setenv cerberus_enrollment_token tok_...
 cerberus run       # enroll + up + watch（默认；S99cerberus 启动的就是它）
 cerberus enroll    # 仅注册，幂等
 cerberus up        # 用已保存的材料启动接口
-cerberus status    # 已保存的内容、握手时间、隧道是否有响应
+cerberus status    # 已保存的内容、密钥指纹、握手时间、隧道是否有响应
 cerberus keygen    # 打印密钥对（stdout 为数据，诊断信息输出到 stderr）
 cerberus clean     # 移除代理：接口、启动脚本、已保存的材料以及二进制文件本身
 cerberus motion    # 像 majestic 的钩子一样，通知正在运行的代理“有移动”

@@ -70,7 +70,7 @@
 
 /* The version of every build, release builds included (#32); `make VERSION=...` overrides it for a test build. */
 #ifndef CERBERUS_VERSION
-#define CERBERUS_VERSION "0.3.1"
+#define CERBERUS_VERSION "0.3.2"
 #endif
 
 /* Where the errors are decoded. Printed after every fatal one: the reader is on a camera
@@ -707,8 +707,13 @@ static int store_get(const char *key, char *out, size_t out_sz)
     return 0;
 }
 
-/* Sets `key`, or removes it when `value` is NULL. */
-static void store_put(const char *key, const char *value)
+/*
+ * Sets `key`, or removes it when `value` is NULL. A failure is fatal, except with `soft`: then it is a
+ * warning and -1. Soft is for what the agent can live without — a cache — where stopping a camera
+ * that has everything it needs, because a full U-Boot environment had no room for one more variable,
+ * would cost far more than the value is worth.
+ */
+static int store_put(const char *key, const char *value, int soft)
 {
     const char *path;
     char tmp[512], line[1024];
@@ -717,20 +722,28 @@ static void store_put(const char *key, const char *value)
 
     if (store_is_uboot()) {
         char *argv[] = { "fw_setenv", (char *)key, (char *)value, NULL };   /* no value = unset */
-        if (run(argv, NULL, 0) != 0 && value)
-            die("fw_setenv %s failed — is /etc/fw_env.config right?", key);
-        return;
+        if (run(argv, NULL, 0) != 0 && value) {
+            if (!soft) die("fw_setenv %s failed — is /etc/fw_env.config right?", key);
+            warn_("fw_setenv %s failed — carrying on without it", key);
+            return -1;
+        }
+        return 0;
     }
 
     /* Rewrite the file with this key replaced. Small and rare enough that a full rewrite beats
      * carrying an in-memory model of it. */
     path = store_file();
     in = fopen(path, "r");
-    if (!in && !value) return;
+    if (!in && !value) return 0;
     mkparent(path);
     snprintf(tmp, sizeof tmp, "%s.tmp", path);
     out = fopen(tmp, "w");
-    if (!out) die("cannot write %s: %s", tmp, strerror(errno));
+    if (!out) {
+        if (!soft) die("cannot write %s: %s", tmp, strerror(errno));
+        warn_("cannot write %s: %s — carrying on without %s", tmp, strerror(errno), key);
+        if (in) fclose(in);
+        return -1;
+    }
     if (in) {
         while (fgets(line, sizeof line, in)) {
             if (!strncmp(line, key, klen) && line[klen] == '=') continue;
@@ -741,11 +754,18 @@ static void store_put(const char *key, const char *value)
     if (value) fprintf(out, "%s=%s\n", key, value);
     fclose(out);
     if (chmod(tmp, 0600) != 0) warn_("chmod %s: %s", tmp, strerror(errno));
-    if (rename(tmp, path) != 0) die("cannot replace %s: %s", path, strerror(errno));
+    if (rename(tmp, path) != 0) {
+        if (!soft) die("cannot replace %s: %s", path, strerror(errno));
+        warn_("cannot replace %s: %s — carrying on without %s", path, strerror(errno), key);
+        unlink(tmp);
+        return -1;
+    }
+    return 0;
 }
 
-static void store_set(const char *key, const char *value) { store_put(key, value); }
-static void store_unset(const char *key) { store_put(key, NULL); }
+static void store_set(const char *key, const char *value) { store_put(key, value, 0); }
+static int store_set_soft(const char *key, const char *value) { return store_put(key, value, 1); }
+static void store_unset(const char *key) { store_put(key, NULL, 0); }
 
 /*
  * The agent's keys used to be called streq_*: streq_device_key, streq_node_id, ...
@@ -1208,6 +1228,26 @@ static void json_put(char *out, size_t out_sz, size_t *n, const char *in, int es
 /* ------------------------------------------------------------------ device */
 
 /*
+ * What ties the cached public key (cerberus_device_pubkey, stored as "<public>:<binding>") to the
+ * private key it was derived from: the first 8 bytes of SHA-256 of the raw private key, in hex. A
+ * private key replaced or removed by hand then leaves a cache that no longer matches, and `status`
+ * says the fingerprint is unknown instead of showing another key's as this camera's. Nothing secret
+ * leaks through it: it sits in the same store as the private key itself.
+ */
+static int key_binding(const char *priv_b64, char out[17])
+{
+    unsigned char raw[32], d[32];
+    size_t olen = 0;
+    int i;
+
+    if (b64_decode(priv_b64, raw, sizeof raw, &olen) != 0 || olen != 32) return -1;
+    if (sha256_once(raw, sizeof raw, d) != 0) return -1;
+    for (i = 0; i < 8; i++) sprintf(out + 2 * i, "%02x", d[i]);
+    mbedtls_platform_zeroize(raw, sizeof raw);
+    return 0;
+}
+
+/*
  * The device private key, from the same store the join material lives in.
  *
  * Not from a file on the rootfs, and that is the point. On an OpenIPC camera /etc is squashfs (or an
@@ -1224,7 +1264,7 @@ static void json_put(char *out, size_t out_sz, size_t *n, const char *in, int es
 static void device_key(char priv_b64[64], char pub_b64[64])
 {
     unsigned char priv[32], pub[32];
-    char stored[128], line[128];
+    char stored[128], line[128], binding[17], cache[128];
     size_t olen = 0;
     FILE *f;
 
@@ -1253,6 +1293,39 @@ static void device_key(char priv_b64[64], char pub_b64[64])
 
     if (x25519_pub(priv, pub) != 0) die("X25519 public key derivation failed");
     b64(pub, sizeof pub, pub_b64, 64);
+
+    /* The public half is kept next to the private one for `status`, which prints its fingerprint and
+     * must not need randomness — X25519 here does, for blinding. One write the first time (or after
+     * someone replaces the key by hand), none after: on a camera every write is a flash erase. And a
+     * soft one: it is a cache, and a U-Boot environment with no room left for it must not stop a
+     * camera that has everything else. */
+    if (key_binding(priv_b64, binding) == 0) {
+        snprintf(cache, sizeof cache, "%s:%s", pub_b64, binding);
+        if (!store_get("cerberus_device_pubkey", stored, sizeof stored) || strcmp(stored, cache) != 0)
+            store_set_soft("cerberus_device_pubkey", cache);
+    }
+}
+
+/*
+ * The fingerprint the cloud's panel shows next to the node, so the two can be compared by eye: SHA-256
+ * of the 32 raw key bytes, the first 16 of it in lowercase hex, eight groups of four. No prefix or salt
+ * on purpose — `echo <key> | base64 -d | sha256sum` checks it by hand on any machine. The format is
+ * held by this, the coordinator and the viewer together, each with the same test vector.
+ */
+static int key_fingerprint(const char *pub_b64, char out[40])
+{
+    unsigned char raw[32], d[32];
+    size_t olen = 0;
+    char *p = out;
+    int i;
+
+    if (b64_decode(pub_b64, raw, sizeof raw, &olen) != 0 || olen != 32) return -1;
+    if (sha256_once(raw, sizeof raw, d) != 0) return -1;
+    for (i = 0; i < 16; i++) {
+        if (i > 0 && i % 2 == 0) *p++ = ' ';
+        p += sprintf(p, "%02x", d[i]);
+    }
+    return 0;
 }
 
 /*
@@ -2278,11 +2351,29 @@ static int enroll_with_retry(void)
 
 static int cmd_status(void)
 {
-    char v[512];
+    char v[512], fp[40];
     long age;
     printf("store          %s\n", store_is_uboot() ? "u-boot env (fw_setenv)" : store_file());
     printf("node           %s\n", store_get("cerberus_node_id", v, sizeof v) ? v : "(not enrolled)");
     printf("device key     %s\n", store_get("cerberus_device_key", v, sizeof v) ? "in the store" : "-");
+    /* The cached public key counts only while it belongs to the private key in the store (see
+     * key_binding). No cache yet — a key from an older agent — or a key replaced by hand since: the
+     * next start fills it in. No private key at all: there is nothing to fingerprint. */
+    if (!store_get("cerberus_device_key", v, sizeof v)) {
+        printf("fingerprint    -\n");
+    } else {
+        char binding[17], cache[128], *sep;
+        int ok = key_binding(v, binding) == 0 &&
+                 store_get("cerberus_device_pubkey", cache, sizeof cache) &&
+                 (sep = strchr(cache, ':')) != NULL && strcmp(sep + 1, binding) == 0 &&
+                 (*sep = 0, key_fingerprint(cache, fp) == 0);
+        if (ok) {
+            printf("public key     %s\n", cache);
+            printf("fingerprint    %s\n", fp);
+        } else {
+            printf("fingerprint    - (known after the next start)\n");
+        }
+    }
     printf("overlay ip     %s\n", store_get("cerberus_overlay_ip", v, sizeof v) ? v : "-");
     printf("hub endpoint   %s\n", store_get("cerberus_hub_endpoint", v, sizeof v) ? v : "-");
     printf("hub public key %s\n", store_get("cerberus_hub_pubkey", v, sizeof v) ? v : "-");
@@ -2490,7 +2581,7 @@ static int cmd_clean(void)
     /* Both spellings of each: whatever an older install left under streq_* goes too. */
     static const char *suffixes[] = {
         "node_id", "overlay_ip", "hub_endpoint", "hub_pubkey", "allowed_ips", "network_subnet",
-        "hub_ip", "claim_code", "device_key", "api", "enrollment_token", "hostname", "kind", "iface",
+        "hub_ip", "claim_code", "device_key", "device_pubkey", "api", "enrollment_token", "hostname", "kind", "iface",
         "subnet", "ca", "heartbeat", "ping_target", "ping_interval", "ping_timeout", "ping_fails",
         "events", "snapshot_url",
         NULL
