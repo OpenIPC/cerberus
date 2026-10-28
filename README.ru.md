@@ -154,7 +154,7 @@ fw_setenv cerberus_enrollment_token tok_...
 cerberus run       # enroll + up + watch (по умолчанию; это запускает S99cerberus)
 cerberus enroll    # только энролл, идемпотентно
 cerberus up        # поднять интерфейс из сохранённого
-cerberus status    # что сохранено, возраст хендшейка, отвечает ли туннель
+cerberus status    # что сохранено, отпечаток ключа, возраст хендшейка, отвечает ли туннель
 cerberus keygen    # напечатать пару ключей (stdout — данные, диагностика в stderr)
 cerberus clean     # убрать агента: интерфейс, автозапуск, сохранённое и сам бинарь
 cerberus motion    # сказать работающему агенту «движение», как это делает хук majestic

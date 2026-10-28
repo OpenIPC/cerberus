@@ -10,7 +10,7 @@ INIT=/etc/init.d/S99cerberus
 CONF=/etc/cerberus
 HOOK=/usr/sbin/motion.sh
 KEYS="node_id overlay_ip hub_endpoint hub_pubkey allowed_ips network_subnet hub_ip
-      claim_code device_key api enrollment_token hostname kind iface subnet ca heartbeat
+      claim_code device_key device_pubkey api enrollment_token hostname kind iface subnet ca heartbeat
       ping_target ping_interval ping_timeout ping_fails events snapshot_url"
 
 say() { echo "cerberus: $*"; }

@@ -70,7 +70,7 @@
 
 /* The version of every build, release builds included (#32); `make VERSION=...` overrides it for a test build. */
 #ifndef CERBERUS_VERSION
-#define CERBERUS_VERSION "0.3.1"
+#define CERBERUS_VERSION "0.3.2"
 #endif
 
 /* Where the errors are decoded. Printed after every fatal one: the reader is on a camera
@@ -1253,6 +1253,34 @@ static void device_key(char priv_b64[64], char pub_b64[64])
 
     if (x25519_pub(priv, pub) != 0) die("X25519 public key derivation failed");
     b64(pub, sizeof pub, pub_b64, 64);
+
+    /* The public half is kept next to the private one for `status`, which prints its fingerprint and
+     * must not need randomness — X25519 here does, for blinding. One write the first time (or after
+     * someone replaces the key by hand), none after: on a camera every write is a flash erase. */
+    if (!store_get("cerberus_device_pubkey", stored, sizeof stored) || strcmp(stored, pub_b64) != 0)
+        store_set("cerberus_device_pubkey", pub_b64);
+}
+
+/*
+ * The fingerprint the cloud's panel shows next to the node, so the two can be compared by eye: SHA-256
+ * of the 32 raw key bytes, the first 16 of it in lowercase hex, eight groups of four. No prefix or salt
+ * on purpose — `echo <key> | base64 -d | sha256sum` checks it by hand on any machine. The format is
+ * held by this, the coordinator and the viewer together, each with the same test vector.
+ */
+static int key_fingerprint(const char *pub_b64, char out[40])
+{
+    unsigned char raw[32], d[32];
+    size_t olen = 0;
+    char *p = out;
+    int i;
+
+    if (b64_decode(pub_b64, raw, sizeof raw, &olen) != 0 || olen != 32) return -1;
+    if (sha256_once(raw, sizeof raw, d) != 0) return -1;
+    for (i = 0; i < 16; i++) {
+        if (i > 0 && i % 2 == 0) *p++ = ' ';
+        p += sprintf(p, "%02x", d[i]);
+    }
+    return 0;
 }
 
 /*
@@ -2278,11 +2306,19 @@ static int enroll_with_retry(void)
 
 static int cmd_status(void)
 {
-    char v[512];
+    char v[512], fp[40];
     long age;
     printf("store          %s\n", store_is_uboot() ? "u-boot env (fw_setenv)" : store_file());
     printf("node           %s\n", store_get("cerberus_node_id", v, sizeof v) ? v : "(not enrolled)");
     printf("device key     %s\n", store_get("cerberus_device_key", v, sizeof v) ? "in the store" : "-");
+    if (store_get("cerberus_device_pubkey", v, sizeof v) && key_fingerprint(v, fp) == 0) {
+        printf("public key     %s\n", v);
+        printf("fingerprint    %s\n", fp);
+    } else {
+        /* A key made by an agent older than the stored public half: the next start fills it in. */
+        printf("fingerprint    %s\n",
+               store_get("cerberus_device_key", v, sizeof v) ? "- (known after the next start)" : "-");
+    }
     printf("overlay ip     %s\n", store_get("cerberus_overlay_ip", v, sizeof v) ? v : "-");
     printf("hub endpoint   %s\n", store_get("cerberus_hub_endpoint", v, sizeof v) ? v : "-");
     printf("hub public key %s\n", store_get("cerberus_hub_pubkey", v, sizeof v) ? v : "-");
@@ -2490,7 +2526,7 @@ static int cmd_clean(void)
     /* Both spellings of each: whatever an older install left under streq_* goes too. */
     static const char *suffixes[] = {
         "node_id", "overlay_ip", "hub_endpoint", "hub_pubkey", "allowed_ips", "network_subnet",
-        "hub_ip", "claim_code", "device_key", "api", "enrollment_token", "hostname", "kind", "iface",
+        "hub_ip", "claim_code", "device_key", "device_pubkey", "api", "enrollment_token", "hostname", "kind", "iface",
         "subnet", "ca", "heartbeat", "ping_target", "ping_interval", "ping_timeout", "ping_fails",
         "events", "snapshot_url",
         NULL

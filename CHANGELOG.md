@@ -4,6 +4,14 @@ The version lives in `CERBERUS_VERSION` in `src/cerberus.c` (`MAJOR.MINOR.PATCH`
 published only as the [`latest`](https://github.com/OpenIPC/cerberus/releases/latest) release
 (see the README); this file is the change history, newest first.
 
+## 0.3.2 — 2026-10-28
+
+- `cerberus status` prints the device's public key and its fingerprint — the same eight groups the
+  cloud's panel shows on the device page, so the two can be compared by eye. The fingerprint is
+  SHA-256 of the raw key, first 16 bytes in hex: `echo <key> | base64 -d | sha256sum` checks it.
+- The public key is kept in the store as `cerberus_device_pubkey` (written once, at the first start
+  that derives it), because `status` must not need randomness and deriving the key does.
+
 ## 0.3.1 — 2026-10-17
 
 One release, `latest` (#32), and a version check (#33).

@@ -156,7 +156,7 @@ getrandom(2) first).
 cerberus run       # enroll + up + watch (the default; what S99cerberus starts)
 cerberus enroll    # enroll only, idempotent
 cerberus up        # bring the interface up from the stored material
-cerberus status    # what is stored, handshake age, whether the tunnel answers
+cerberus status    # what is stored, the key fingerprint, handshake age, whether the tunnel answers
 cerberus keygen    # print the keypair (stdout is data, diagnostics go to stderr)
 cerberus clean     # remove the agent: interface, init script, stored material, the binary
 cerberus motion    # tell the running agent there is motion, as majestic's hook does

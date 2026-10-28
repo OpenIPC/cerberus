@@ -266,6 +266,20 @@ cp agent.env enrolled.env
 CERBERUS_ENROLLMENT_TOKEN=$TOKEN $A status >status.out 2>/dev/null
 check "status names the node" "$(yes_if grep -q "^node  *$NODE" status.out)" "yes"
 check "status shows the claim code" "$(yes_if grep -q "^claim code  *$CLAIM" status.out)" "yes"
+check "status shows the public key" "$(sed -n 's/^public key  *//p' status.out)" "$PUB"
+check "and its fingerprint, as sha256sum of the raw key reads it" \
+	"$(sed -n 's/^fingerprint  *//p' status.out | tr -d ' ')" \
+	"$(echo "$PUB" | base64 -d | sha256sum | cut -c1-32)"
+# The vector the coordinator's KeyFingerprintTests pins too: two implementations of one format, and a
+# drift between them would show an honest camera as a substituted one.
+printf 'cerberus_device_pubkey=HIgo9xNzJMWLKASShiTqIybxZ0U3wGLiUeJ1PKf8ykw=\n' >vector.env
+check "fingerprint: the cloud's test vector" \
+	"$(CERBERUS_STORE=file:$T/vector.env $A status 2>/dev/null | sed -n 's/^fingerprint  *//p')" \
+	"9946 8313 5dcd 688b cf07 0f57 1e50 618f"
+grep -v '^cerberus_device_pubkey=' enrolled.env >oldkey.env
+check "a key from an older agent: no fingerprint until the next start, and no key derived for it" \
+	"$(CERBERUS_STORE=file:$T/oldkey.env $A status 2>/dev/null | sed -n 's/^fingerprint  *//p')$(sv cerberus_device_pubkey oldkey.env)" \
+	"- (known after the next start)"
 
 # The probe pings the hub in the network the interface is in (#7): with a networkSubnet and no
 # hubOverlayIp, the first address of that subnet — not of CERBERUS_SUBNET's default pool.
