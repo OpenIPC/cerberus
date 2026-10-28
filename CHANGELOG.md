@@ -10,7 +10,9 @@ published only as the [`latest`](https://github.com/OpenIPC/cerberus/releases/la
   cloud's panel shows on the device page, so the two can be compared by eye. The fingerprint is
   SHA-256 of the raw key, first 16 bytes in hex: `echo <key> | base64 -d | sha256sum` checks it.
 - The public key is kept in the store as `cerberus_device_pubkey` (written once, at the first start
-  that derives it), because `status` must not need randomness and deriving the key does.
+  that derives it), because `status` must not need randomness and deriving the key does. It is
+  bound to the private key it came from, so a key replaced by hand shows no fingerprint rather than
+  the old one; and a store with no room for it costs a warning, never the camera's start.
 
 ## 0.3.1 — 2026-10-17
 
