@@ -352,6 +352,19 @@ ctl command '{"command":"Reboot"}'
 runfor 7 reboot.log PATH="$T/bin:$PATH"
 check "Reboot: syncs and calls reboot" "$(yes_if test -e $T/rebooted)" "yes"
 
+printf '#!/bin/sh
+echo "$*" >>%s/cli.calls
+' $T >$T/bin/cli && chmod +x $T/bin/cli
+printf '#!/bin/sh
+echo "$*" >>%s/killall.calls
+' $T >$T/bin/killall && chmod +x $T/bin/killall
+ctl command '{"command":"EnableMotion"}'
+runfor 7 motion-on.log PATH="$T/bin:$PATH"
+check "EnableMotion: both majestic keys through cli" "$(tr '
+' ';' <$T/cli.calls)" 	"-s .motionDetect.enabled true;-s .system.plugins true;"
+check "and majestic is told to re-read them" "$(cat $T/killall.calls)" "-1 majestic"
+check "and says so" "$(yes_if grep -q 'motion detection switched on in majestic' motion-on.log)" "yes"
+
 ctl command '{"command":"SelfDestruct"}'
 runfor 7 unknown.log
 check "an unknown command is ignored, loudly" "$(yes_if grep -q "unknown command 'SelfDestruct'" unknown.log)" "yes"
