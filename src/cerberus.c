@@ -70,7 +70,7 @@
 
 /* The version of every build, release builds included (#32); `make VERSION=...` overrides it for a test build. */
 #ifndef CERBERUS_VERSION
-#define CERBERUS_VERSION "0.3.3"
+#define CERBERUS_VERSION "0.3.4"
 #endif
 
 /* Where the errors are decoded. Printed after every fatal one: the reader is on a camera
@@ -901,13 +901,15 @@ static int conn_send(struct conn *c, const char *buf, size_t len)
     return 0;
 }
 
+#define HTTP_TIMEOUT_MS 10000
+
 static int conn_recv(struct conn *c, unsigned char *buf, size_t len)
 {
     int n;
     do {
         n = c->tls
             ? mbedtls_ssl_read(&c->ssl, buf, len)
-            : mbedtls_net_recv(&c->net, buf, len);
+            : mbedtls_net_recv_timeout(&c->net, buf, len, HTTP_TIMEOUT_MS);
     } while (n == MBEDTLS_ERR_SSL_WANT_READ || n == MBEDTLS_ERR_SSL_WANT_WRITE);
     return n;
 }
@@ -1082,9 +1084,10 @@ static long http_do(const struct http_req *rq, unsigned char *resp, size_t resp_
         }
 
         mbedtls_ssl_conf_rng(&c.conf, mbedtls_ctr_drbg_random, rng);
+        mbedtls_ssl_conf_read_timeout(&c.conf, HTTP_TIMEOUT_MS);
         if (mbedtls_ssl_setup(&c.ssl, &c.conf) != 0) die("ssl setup failed");
         if (mbedtls_ssl_set_hostname(&c.ssl, host) != 0) die("ssl SNI failed");
-        mbedtls_ssl_set_bio(&c.ssl, &c.net, mbedtls_net_send, mbedtls_net_recv, NULL);
+        mbedtls_ssl_set_bio(&c.ssl, &c.net, mbedtls_net_send, mbedtls_net_recv, mbedtls_net_recv_timeout);
 
         while ((rc = mbedtls_ssl_handshake(&c.ssl)) != 0) {
             if (rc == MBEDTLS_ERR_SSL_WANT_READ || rc == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
@@ -1126,7 +1129,15 @@ static long http_do(const struct http_req *rq, unsigned char *resp, size_t resp_
     for (;;) {
         n = conn_recv(&c, buf, sizeof buf);
         if (n == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY || n <= 0) break;
-        if (total + (size_t)n + 1 > resp_sz) { overflow = 1; break; }
+        if (total + (size_t)n + 1 > resp_sz) {
+            size_t room = resp_sz > total + 1 ? resp_sz - 1 - total : 0;
+            if (room) {
+                memcpy(resp + total, buf, room);
+                total += room;
+            }
+            overflow = 1;
+            break;
+        }
         memcpy(resp + total, buf, (size_t)n);
         total += (size_t)n;
     }
@@ -2136,6 +2147,50 @@ static void enable_motion(void)
 }
 
 /*
+ * NightModeOn / NightModeOff: majestic's own /night/on and /night/off — the switch its web interface
+ * flips. Sent to the same origin the snapshot comes from (cerberus_snapshot_url), so a majestic with
+ * a password is reached with the password already given for frames, and no second address has to be
+ * configured. There is no answer to the cloud either way — the directive channel has none — so what
+ * happened goes to the log; and if majestic's automatic mode is on, its light sensor may switch back.
+ */
+static void night_mode(int on)
+{
+    const char *what = on ? "NightModeOn" : "NightModeOff";
+    const char *s = g_cfg.snapshot_url, *scheme = s ? strstr(s, "://") : NULL, *path;
+    struct http_req rq = { "GET", NULL, NULL, NULL, 0, NULL };
+    unsigned char resp[512];
+    char url[512];
+    size_t origin;
+    int status = 0;
+    long n;
+
+    if (!url_ok(s) || !scheme) {
+        warn_("%s: CERBERUS_SNAPSHOT_URL is not an http(s) URL, so there is no majestic to ask", what);
+        return;
+    }
+    path = strchr(scheme + 3, '/');
+    origin = path ? (size_t)(path - s) : strlen(s);
+    if (origin + sizeof "/night/off" > sizeof url) {
+        warn_("%s: CERBERUS_SNAPSHOT_URL is too long", what);
+        return;
+    }
+    memcpy(url, s, origin);
+    strcpy(url + origin, on ? "/night/on" : "/night/off");
+    rq.url = url;
+
+    n = http_do(&rq, resp, sizeof resp, &status);
+    /* The address may carry majestic's password: say the path, never the URL. */
+    if (n == -1)
+        warn_("%s: majestic did not answer %s", what, on ? "/night/on" : "/night/off");
+    else if (status == 401 || status == 403)
+        warn_("%s: majestic wants a password — put it in cerberus_snapshot_url, as for frames", what);
+    else if (status != 200)
+        warn_("%s: majestic answered HTTP %d to %s", what, status, on ? "/night/on" : "/night/off");
+    else
+        note("%s mode switched on in majestic", on ? "night" : "day");
+}
+
+/*
  * Применяет NodeDirective из ответа на heartbeat.
  *
  * The join material arrives whole on every beat, never as a delta, so this compares it with what is
@@ -2196,6 +2251,10 @@ static void apply_directive(const char *json)
         self_restart();
     else if (!strcmp(command, "EnableMotion"))
         enable_motion();
+    else if (!strcmp(command, "NightModeOn"))
+        night_mode(1);
+    else if (!strcmp(command, "NightModeOff"))
+        night_mode(0);
     else if (strcmp(command, "None") != 0)
         warn_("unknown command '%s' from the coordinator — ignoring", command);
 }
