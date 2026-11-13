@@ -230,7 +230,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class Majestic(BaseHTTPRequestHandler):
-    """majestic's /image.jpg: Basic auth root:12345, a JPEG-looking body, sent chunked."""
+    """majestic's /image.jpg (a JPEG-looking body, sent chunked) and /night/on|off, behind Basic auth root:12345."""
     protocol_version = "HTTP/1.1"
     FRAME = b"\xff\xd8\xff\xe0" + bytes(range(256)) * 40 + b"\xff\xd9"
 
@@ -242,6 +242,19 @@ class Majestic(BaseHTTPRequestHandler):
         with LOCK:
             STATE["requests"].append({"path": "majestic:" + self.path,
                                       "authorized": self.headers.get("Authorization") == want})
+        if self.path in ("/night/on", "/night/off"):
+            if self.headers.get("Authorization") != want:
+                self.send_response(401)
+                self.send_header("WWW-Authenticate", 'Basic realm="majestic"')
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+            return
         if not self.path.startswith("/image.jpg"):
             self.send_response(404)
             self.send_header("Content-Length", "0")

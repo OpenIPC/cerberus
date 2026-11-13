@@ -4,6 +4,22 @@ The version lives in `CERBERUS_VERSION` in `src/cerberus.c` (`MAJOR.MINOR.PATCH`
 published only as the [`latest`](https://github.com/OpenIPC/cerberus/releases/latest) release
 (see the README); this file is the change history, newest first.
 
+## 0.3.4 — 2026-11-13
+
+- The coordinator's `NightModeOn` / `NightModeOff` commands switch majestic into night or day mode
+  through its own `/night/on` and `/night/off`, on the same address the snapshot comes from — so a
+  majestic with a password is reached with the one already in `cerberus_snapshot_url`, and the log
+  names the path, never that address. Like every command there is no answer to the cloud; if
+  majestic's automatic mode is on, its light sensor may switch back.
+
+## 0.3.3 — 2026-11-12
+
+- The coordinator's `EnableMotion` command switches majestic's own motion detector on
+  (`cli -s .motionDetect.enabled true`, `cli -s .system.plugins true`) and restarts majestic
+  (`/etc/init.d/S95majestic restart`, or SIGHUP where the firmware has no such script). Until now
+  the cloud's "look for people" switch did nothing on a camera whose detector had not been turned
+  on by hand in its web interface. Switching it off stays where it was: in the web interface.
+
 ## 0.3.2 — 2026-10-28
 
 - `cerberus status` prints the device's public key and its fingerprint — the same eight groups the
