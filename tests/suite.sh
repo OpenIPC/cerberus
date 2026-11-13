@@ -365,6 +365,19 @@ check "EnableMotion: both majestic keys through cli" "$(tr '
 check "and majestic is told to re-read them" "$(cat $T/killall.calls)" "-1 majestic"
 check "and says so" "$(yes_if grep -q 'motion detection switched on in majestic' motion-on.log)" "yes"
 
+# Day/night goes to majestic on the snapshot's origin, with the snapshot's password.
+NIGHT_SNAP=CERBERUS_SNAPSHOT_URL=http://root:12345@127.0.0.1:8081/image.jpg
+ctl command '{"command":"NightModeOn"}'
+runfor 7 night-on.log $NIGHT_SNAP
+check "NightModeOn: majestic's /night/on, with the snapshot's password" 	"$(q "print([r['authorized'] for r in R if r['path'] == 'majestic:/night/on'])")" "[True]"
+check "and says so, without printing the address it carries a password in" 	"$(yes_if grep -q 'night mode switched on in majestic' night-on.log)$(yes_if grep -q '12345' night-on.log)" "yesno"
+ctl command '{"command":"NightModeOff"}'
+runfor 7 night-off.log $NIGHT_SNAP
+check "NightModeOff: majestic's /night/off" "$(q "print(sum(r['path'] == 'majestic:/night/off' for r in R))")" "1"
+ctl command '{"command":"NightModeOn"}'
+runfor 7 night-nopass.log CERBERUS_SNAPSHOT_URL=http://127.0.0.1:8081/image.jpg
+check "without majestic's password: says where to put it" 	"$(yes_if grep -q 'put it in cerberus_snapshot_url' night-nopass.log)" "yes"
+
 ctl command '{"command":"SelfDestruct"}'
 runfor 7 unknown.log
 check "an unknown command is ignored, loudly" "$(yes_if grep -q "unknown command 'SelfDestruct'" unknown.log)" "yes"
