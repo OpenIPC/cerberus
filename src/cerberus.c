@@ -70,7 +70,7 @@
 
 /* The version of every build, release builds included (#32); `make VERSION=...` overrides it for a test build. */
 #ifndef CERBERUS_VERSION
-#define CERBERUS_VERSION "0.3.2"
+#define CERBERUS_VERSION "0.3.3"
 #endif
 
 /* Where the errors are decoded. Printed after every fatal one: the reader is on a camera
@@ -2106,6 +2106,36 @@ static void do_reboot(void)
 }
 
 /*
+ * EnableMotion: majestic's own motion detector on, so that the hook it runs on motion — the only
+ * thing that wakes the event path — fires at all. Without it the cloud's "look for people" switch
+ * does nothing and nobody can tell why. There is no counterpart to switch it off: that is done in
+ * the camera's web interface, where it was always done.
+ *
+ * Both keys go through `cli`, majestic's own config tool, rather than an edit of majestic.yaml by
+ * hand: the file's layout is majestic's business. A restart then makes majestic read them; where
+ * the firmware has no init script by that name, SIGHUP — what the web interface sends after saving.
+ */
+static void enable_motion(void)
+{
+    char *detector[] = { "cli", "-s", ".motionDetect.enabled", "true", NULL };
+    char *plugins[] = { "cli", "-s", ".system.plugins", "true", NULL };
+    char *restart[] = { "/etc/init.d/S95majestic", "restart", NULL };
+    char *reload[] = { "killall", "-1", "majestic", NULL };
+
+    if (run(detector, NULL, 0) != 0 || run(plugins, NULL, 0) != 0) {
+        warn_("EnableMotion: `cli -s` failed — is majestic on this firmware?");
+        return;
+    }
+    if (run(restart, NULL, 0) != 0 && run(reload, NULL, 0) != 0) {
+        warn_("EnableMotion: the detector is on in majestic's config, but majestic could not be restarted"
+              " — it takes effect on majestic's next start");
+        return;
+    }
+    note("motion detection switched on in majestic%s",
+         g_cfg.events ? "" : " (motion events are off in this agent, so nothing will reach the cloud)");
+}
+
+/*
  * Применяет NodeDirective из ответа на heartbeat.
  *
  * The join material arrives whole on every beat, never as a delta, so this compares it with what is
@@ -2164,6 +2194,8 @@ static void apply_directive(const char *json)
         do_reboot();
     else if (!strcmp(command, "Restart"))
         self_restart();
+    else if (!strcmp(command, "EnableMotion"))
+        enable_motion();
     else if (strcmp(command, "None") != 0)
         warn_("unknown command '%s' from the coordinator — ignoring", command);
 }
