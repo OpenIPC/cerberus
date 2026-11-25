@@ -24,4 +24,5 @@ MSYS_NO_PATHCONV=1 exec docker run --rm --privileged \
 	--add-host coordinator.test:127.0.0.1 \
 	-v "$(host_path .):/src:ro" \
 	-e REQUIRE_WG="${REQUIRE_WG:-}" \
+	-e GITHUB_ACTIONS="${GITHUB_ACTIONS:-}" \
 	"$IMAGE" sh /src/tests/suite.sh

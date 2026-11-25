@@ -20,6 +20,9 @@ check() { # check <label> <actual> <expected>
 		PASS=$((PASS + 1))
 	else
 		printf '  FAIL  %-52s got [%s], want [%s]\n' "$1" "$2" "$3"
+		if [ "${GITHUB_ACTIONS:-}" = true ]; then
+			printf '::error::%s — got [%s], want [%s]\n' "$1" "$2" "$3"
+		fi
 		FAIL=$((FAIL + 1))
 	fi
 }
@@ -317,7 +320,7 @@ check "the key file does not outlive the call" "$(yes_if test -e $T/.wg.key)" "n
 # that has everything else it needs.
 FULL=$T/full-uboot.env
 grep -v '^cerberus_device_pubkey=' enrolled.env >$FULL
-FAKE_UBOOT_FULL=cerberus_device_pubkey uboot $FULL $A up >full.log 2>&1
+uboot $FULL env FAKE_UBOOT_FULL=cerberus_device_pubkey $A up >full.log 2>&1
 check "a full U-Boot env: up still succeeds" "$?" "0"
 check "and programs the interface" "$(yes_if grep -qF "dry-run: wg set cbr0 private-key" full.log)" "yes"
 check "and says what it could not keep" "$(yes_if grep -q 'fw_setenv cerberus_device_pubkey failed' full.log)" "yes"
@@ -364,6 +367,21 @@ check "EnableMotion: both majestic keys through cli" "$(tr '
 ' ';' <$T/cli.calls)" 	"-s .motionDetect.enabled true;-s .system.plugins true;"
 check "and majestic is told to re-read them" "$(cat $T/killall.calls)" "-1 majestic"
 check "and says so" "$(yes_if grep -q 'motion detection switched on in majestic' motion-on.log)" "yes"
+
+# Day/night goes to majestic on the snapshot's origin, with the snapshot's password.
+NIGHT_SNAP=CERBERUS_SNAPSHOT_URL=http://root:12345@127.0.0.1:8081/image.jpg
+ctl command '{"command":"NightModeOn"}'
+runfor 7 night-on.log $NIGHT_SNAP
+check "NightModeOn: majestic's /night/on, with the snapshot's password" 	"$(q "print([r['authorized'] for r in R if r['path'] == 'majestic:/night/on'])")" "[True]"
+check "and says so, without printing the address it carries a password in" 	"$(yes_if grep -q 'night mode switched on in majestic' night-on.log)$(yes_if grep -q '12345' night-on.log)" "yesno"
+ctl command '{"command":"NightModeOff"}'
+runfor 7 night-off.log $NIGHT_SNAP
+check "NightModeOff: majestic's /night/off" "$(q "print(sum(r['path'] == 'majestic:/night/off' for r in R))")" "1"
+check "even when majestic's answer outgrows the status buffer" \
+	"$(yes_if grep -q 'day mode switched on in majestic' night-off.log)" "yes"
+ctl command '{"command":"NightModeOn"}'
+runfor 7 night-nopass.log CERBERUS_SNAPSHOT_URL=http://127.0.0.1:8081/image.jpg
+check "without majestic's password: says where to put it" 	"$(yes_if grep -q 'put it in cerberus_snapshot_url' night-nopass.log)" "yes"
 
 ctl command '{"command":"SelfDestruct"}'
 runfor 7 unknown.log
@@ -414,19 +432,22 @@ wg_ok() {
 		&& ip netns add hub 2>/dev/null
 }
 if wg_ok; then
+	# Under /etc/wireguard so a host AppArmor profile for /usr/bin/wg (Ubuntu 25.04+) lets wg read both keys.
+	mkdir -p /etc/wireguard
+	cp $T/hub.key /etc/wireguard/hub.key
 	ip link add veth-cam type veth peer name veth-hub
 	ip link set veth-hub netns hub
 	ip addr add 192.168.77.1/24 dev veth-cam && ip link set veth-cam up
 	ip -n hub addr add 192.168.77.2/24 dev veth-hub
 	ip -n hub link set veth-hub up && ip -n hub link set lo up
 	ip netns exec hub ip link add wg-hub type wireguard
-	ip netns exec hub wg set wg-hub private-key $T/hub.key listen-port 51820 \
+	ip netns exec hub wg set wg-hub private-key /etc/wireguard/hub.key listen-port 51820 \
 		peer "$PUB" allowed-ips $OVERLAY/32
 	ip -n hub addr add $HUB_IP/32 dev wg-hub && ip -n hub link set wg-hub up
 	ip -n hub route add $SUBNET dev wg-hub
 
 	cp enrolled.env agent.env
-	export CERBERUS_DRY_RUN=0 CERBERUS_IFACE=wg0
+	export CERBERUS_DRY_RUN=0 CERBERUS_IFACE=wg0 CERBERUS_KEY_TMP=/etc/wireguard/.wg.key
 	$A up >dp-up.log 2>&1
 	check "wg0 comes up with the overlay address" \
 		"$(yes_if sh -c "ip -4 -o addr show wg0 | grep -q ' $OVERLAY/24 '")" "yes"
@@ -458,7 +479,8 @@ if wg_ok; then
 	check "route restored" "$(yes_if sh -c "ip route show $HUB_IP | grep -q 'dev wg0'")" "yes"
 
 	ip link del wg0 2>/dev/null
-	export CERBERUS_DRY_RUN=1 CERBERUS_IFACE=cbr0
+	rm -rf /etc/wireguard
+	export CERBERUS_DRY_RUN=1 CERBERUS_IFACE=cbr0 CERBERUS_KEY_TMP=$T/.wg.key
 else
 	if [ "${REQUIRE_WG:-}" = 1 ]; then
 		check "kernel WireGuard and netns available" "no" "yes"
